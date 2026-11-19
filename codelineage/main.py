@@ -137,7 +137,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     dist = Path(os.getenv("CODELINEAGE_WEB", str(Path(__file__).resolve().parents[1] / "web" / "dist")))
     if (dist / "index.html").is_file():
-        app.mount("/assets", StaticFiles(directory=dist / "assets"), name="web-assets")
+        if (dist / "_next").is_dir():
+            app.mount("/_next", StaticFiles(directory=dist / "_next"), name="web-next-assets")
+        if (dist / "assets").is_dir():
+            app.mount("/assets", StaticFiles(directory=dist / "assets"), name="web-assets")
 
         @app.get("/", include_in_schema=False)
         def website():

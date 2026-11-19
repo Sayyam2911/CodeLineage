@@ -1,5 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Box, Crosshair, GitFork, Minus, Plus, Search } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Separator } from '@/components/ui/separator'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { Edge, Graph, Node } from './api'
 
 const SIZE = { width: 172, height: 47 }
@@ -56,22 +60,23 @@ export function Diagram({ graph, anchor, selected, selectedEdge, onSelect, onEdg
   if (!positioned.length) return <div className="panel-empty"><GitFork size={25}/><p>No structural symbols in this scope. Source files are still available.</p></div>
   return <div className="diagram">
     <div className="diagram-search">
-      <div className="input-icon"><Search size={15}/><input aria-label="Find a component" placeholder="Find a component or path"
+      <div className="diagram-search-field"><Search size={15} aria-hidden="true"/><Input aria-label="Find a component" placeholder="Find a component or path…"
+        type="search" spellCheck={false} autoComplete="off"
         value={search} onChange={event => setSearch(event.target.value)}
         onKeyDown={event => {
           if (event.key === 'Escape') setSearch('')
           if (event.key === 'Enter' && matches[0]) { onAnchor(matches[0].id); onSelect(matches[0]); setSearch('') }
         }}/></div>
       {search.trim() && <div className="component-results">
-        {matches.length ? matches.map(node => <button key={node.id} type="button" onClick={() => {
+        {matches.length ? matches.map(node => <Button key={node.id} type="button" variant="ghost" onClick={() => {
           onAnchor(node.id); onSelect(node); setSearch('')
-        }}><strong>{node.label}</strong><small>{node.path}</small></button>) : <p>No matching components.</p>}
+        }}><strong>{node.label}</strong><small>{node.path}</small></Button>) : <p>No matching components.</p>}
       </div>}
       <span>{graph.nodes.length.toLocaleString()} components</span>
     </div>
     <div className="canvas">
       <svg role="group" aria-label="Directed architecture diagram" viewBox="0 0 700 375">
-        <defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#657988"/></marker></defs>
+        <defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#68796e"/></marker></defs>
         <g transform={'translate(350 187) scale(' + zoom + ') translate(-350 -187)'}>
           {graph.edges.map((edge, index) => {
             const from = point.get(edge.source)
@@ -110,13 +115,23 @@ export function Diagram({ graph, anchor, selected, selectedEdge, onSelect, onEdg
       </svg>
     </div>
     <div className="diagram-tools">
-      <button type="button" title="Center on selection" aria-label="Center on selection" disabled={!selected}
-        onClick={() => { if (selected) onAnchor(selected); setZoom(1) }}><Crosshair size={16}/></button>
-      <button type="button" title="Zoom out" aria-label="Zoom out" disabled={zoom <= 0.65}
-        onClick={() => setZoom(value => Math.max(0.65, value - 0.15))}><Minus size={16}/></button>
-      <button type="button" title="Zoom in" aria-label="Zoom in" disabled={zoom >= 1.45}
-        onClick={() => setZoom(value => Math.min(1.45, value + 0.15))}><Plus size={16}/></button>
+      <Tooltip>
+        <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Center on selection" disabled={!selected}
+          onClick={() => { if (selected) onAnchor(selected); setZoom(1) }}><Crosshair aria-hidden="true"/></Button></TooltipTrigger>
+        <TooltipContent>Center on selection</TooltipContent>
+      </Tooltip>
+      <Separator orientation="vertical"/>
+      <Tooltip>
+        <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Zoom out" disabled={zoom <= 0.65}
+          onClick={() => setZoom(value => Math.max(0.65, value - 0.15))}><Minus aria-hidden="true"/></Button></TooltipTrigger>
+        <TooltipContent>Zoom out</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Zoom in" disabled={zoom >= 1.45}
+          onClick={() => setZoom(value => Math.min(1.45, value + 0.15))}><Plus aria-hidden="true"/></Button></TooltipTrigger>
+        <TooltipContent>Zoom in</TooltipContent>
+      </Tooltip>
     </div>
-    <div className="diagram-legend"><span><Box size={13}/> Extracted component</span><span><i/> Inferred connection</span></div>
+    <div className="diagram-legend"><span><Box size={13} aria-hidden="true"/> Extracted component</span><span><i/> Inferred connection</span></div>
   </div>
 }
