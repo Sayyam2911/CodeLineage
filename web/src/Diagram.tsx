@@ -5,7 +5,7 @@ import type { Edge, Graph, Node } from './api'
 const SIZE = { width: 172, height: 47 }
 type Positioned = { node: Node; x: number; y: number }
 
-function layout(graph: Graph, anchor: string | null): Positioned[] {
+function layout(graph: Graph, anchor: string | null, selected: string | null): Positioned[] {
   const nodes = new Map(graph.nodes.map(node => [node.id, node]))
   const focus = nodes.get(anchor ?? '') ?? graph.nodes[0]
   if (!focus) return []
@@ -20,8 +20,13 @@ function layout(graph: Graph, anchor: string | null): Positioned[] {
   const sameFile = graph.nodes.filter(node => node.path === focus.path && !used.has(node.id)).slice(0, 4)
   const sides = [incoming, outgoing]
   if (sides.every(side => !side.length)) sides[1] = sameFile.length ? sameFile : graph.nodes.filter(node => !used.has(node.id)).slice(0, 4)
+  const visible = new Set([focus.id, ...sides.flat().map(node => node.id)])
+  const latest = graph.claims.find(claim => claim.snapshotId === graph.snapshotId && claim.revision === graph.revision)
+  const additional = [...new Set([selected, latest?.relatedId])]
+    .flatMap(id => id && !visible.has(id) && nodes.has(id) ? [nodes.get(id)!] : [])
   return [
     { node: focus, x: 262, y: 165 },
+    ...additional.map((node, index) => ({ node, x: 262, y: [280, 64][index] })),
     ...sides.flatMap((side, column) => side.map((node, index) => ({
       node,
       x: column === 0 ? 34 : 492,
@@ -38,7 +43,7 @@ export function Diagram({ graph, anchor, selected, onSelect, onAnchor }: {
   onAnchor: (id: string) => void
 }) {
   const [zoom, setZoom] = useState(1)
-  const positioned = useMemo(() => layout(graph, anchor), [graph, anchor])
+  const positioned = useMemo(() => layout(graph, anchor, selected), [graph, anchor, selected])
   const point = new Map(positioned.map(item => [item.node.id, item]))
   if (!positioned.length) return <div className="panel-empty"><GitFork size={25}/><p>No structural symbols in this scope. Source files are still available.</p></div>
   return <div className="diagram">

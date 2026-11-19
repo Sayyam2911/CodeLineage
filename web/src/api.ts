@@ -29,6 +29,9 @@ export type Claim = {
   speaker: string
   snapshotId: string
   targetId: string | null
+  relatedId: string | null
+  operation: string
+  revision: number
   scopes: string[]
   evidence: Evidence[]
 }

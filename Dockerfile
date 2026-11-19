@@ -22,8 +22,8 @@ COPY pyproject.toml uv.lock ./
 RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca; fi; \
     uv sync --locked --no-dev
-COPY codelineage/ ./codelineage/
-COPY --from=web /app/web/dist ./web/dist
+COPY --chown=65532:65532 codelineage/ ./codelineage/
+COPY --from=web --chown=65532:65532 /app/web/dist ./web/dist
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["python"]
