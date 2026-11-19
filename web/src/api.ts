@@ -1,13 +1,15 @@
 export type Mode = 'update' | 'understand'
 
 export type Evidence = {
-  kind: 'source' | 'interview'
+  kind: 'source' | 'interview' | 'document'
   snapshotId?: string
   path?: string
   start?: number
   end?: number
   speaker?: string
   text?: string
+  title?: string
+  url?: string
 }
 
 export type Topic = {
@@ -53,6 +55,8 @@ export type Session = {
   seq: number
   revision: number
   pending: Proposal | null
+  latestReceipt?: Revision
+  evidenceFocus?: Evidence
   finished: boolean
   token: string
 }
@@ -67,10 +71,16 @@ export type Node = {
 }
 
 export type Edge = {
+  id?: string
   relation: string
   source: string
   target: string
   origin: string
+  path?: string | null
+  start?: number | null
+  end?: number | null
+  confidence?: number | null
+  claimId?: string
 }
 
 export type Graph = { nodes: Node[]; edges: Edge[]; claims: Claim[]; revision: number; snapshotId: string }
@@ -78,6 +88,30 @@ export type Manifest = {
   commit: string
   files: Record<string, { text: boolean; structure: string }>
   coverage: Record<string, number>
+  scope: string
+}
+export type Analysis = {
+  mode: 'local' | 'model' | 'model-partial'
+  complete?: boolean
+  coverage?: Record<string, string>
+  reviewedPaths: string[]
+}
+export type Review = {
+  baseline: string | null
+  scopeBaselines: Record<string, string>
+  changedPaths: string[]
+  affectedPaths: string[]
+  priorClaims: Claim[]
+  wideReview: boolean
+  changes?: { path: string; kind: 'added' | 'modified' | 'deleted' | 'moved'; previousPath?: string; baseline?: string }[]
+  uncertainSymbols?: { previous: string; current: string; path: string }[]
+}
+export type Turn = {
+  id: string
+  seq: number
+  speaker: 'assistant' | 'participant'
+  text: string
+  purpose?: string
 }
 export type Excerpt = { url: string; commit: string; path: string; lines: { number: number; text: string }[] }
 export type Scan = {
@@ -94,14 +128,19 @@ export type Context = {
   hops: (Edge & { fromLabel: string; toLabel: string })[]
   evidence: Evidence[]
   documents: { path: string; url: string }[]
+  answer?: string
   unknown: boolean
 }
 export type Revision = { revision: number; claim: Claim }
-export type SessionEvent = { seq: number; revision: number; type: string; receipt?: Revision; evidence?: Evidence }
+export type SessionEvent = { seq: number; revision: number; type: string; receipt?: Revision; evidence?: Evidence; turn?: Turn }
 
 export const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms))
 
-export async function request<T>(path: string, payload?: unknown, token?: string): Promise<T> {
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) { super(message) }
+}
+
+export async function request<T>(path: string, payload?: unknown, token?: string, signal?: AbortSignal): Promise<T> {
   const headers: Record<string, string> = {}
   if (payload !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Authorization = 'Bearer ' + token
@@ -109,10 +148,12 @@ export async function request<T>(path: string, payload?: unknown, token?: string
     method: payload === undefined ? 'GET' : 'POST',
     headers,
     body: payload === undefined ? undefined : JSON.stringify(payload),
+    signal,
   })
   if (!response.ok) {
     const problem = await response.json().catch(() => null)
-    throw new Error(typeof problem?.detail === 'string' ? problem.detail : 'The request failed. Try again.')
+    const message = typeof problem?.detail === 'string' ? problem.detail : 'The request failed. Try again.'
+    throw new ApiError(response.status, message)
   }
   return await response.json() as T
 }

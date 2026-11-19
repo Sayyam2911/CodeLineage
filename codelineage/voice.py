@@ -234,10 +234,10 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
                 raise HTTPException(422, "Choose valid numbered source lines from the current snapshot.") from exc
             with database.transaction(write=True) as records:
                 session = interviews.authorize(records, session_id, authorization, voice=True)
-                event(records, session, "evidence.focus", evidence={
-                    "kind": "source", "path": body.path, "start": int(body.start), "end": int(body.end),
-                    "snapshotId": session["snapshotId"],
-                })
+                focus = {"kind": "source", "path": body.path, "start": int(body.start), "end": int(body.end),
+                         "snapshotId": session["snapshotId"]}
+                session["evidenceFocus"] = focus
+                event(records, session, "evidence.focus", evidence=focus)
                 records.put("sessions", session_id, session)
             return excerpt
         if name not in {"proposeChange", "confirmChange"}:

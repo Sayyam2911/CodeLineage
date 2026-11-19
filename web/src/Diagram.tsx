@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Box, Crosshair, GitFork, Minus, Plus } from 'lucide-react'
+import { Box, Crosshair, GitFork, Minus, Plus, Search } from 'lucide-react'
 import type { Edge, Graph, Node } from './api'
 
 const SIZE = { width: 172, height: 47 }
@@ -35,20 +35,42 @@ function layout(graph: Graph, anchor: string | null, selected: string | null): P
   ]
 }
 
-export function Diagram({ graph, anchor, selected, onSelect, onAnchor }: {
+export function Diagram({ graph, anchor, selected, selectedEdge, onSelect, onEdge, onAnchor }: {
   graph: Graph
   anchor: string | null
   selected: string | null
+  selectedEdge: Edge | null
+  onEdge: (edge: Edge) => void
   onSelect: (node: Node) => void
   onAnchor: (id: string) => void
 }) {
   const [zoom, setZoom] = useState(1)
+  const [search, setSearch] = useState('')
+  const matches = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    if (!term) return []
+    return graph.nodes.filter(node => [node.label, node.path ?? ''].some(text => text.toLowerCase().includes(term))).slice(0, 12)
+  }, [graph.nodes, search])
   const positioned = useMemo(() => layout(graph, anchor, selected), [graph, anchor, selected])
   const point = new Map(positioned.map(item => [item.node.id, item]))
   if (!positioned.length) return <div className="panel-empty"><GitFork size={25}/><p>No structural symbols in this scope. Source files are still available.</p></div>
   return <div className="diagram">
+    <div className="diagram-search">
+      <div className="input-icon"><Search size={15}/><input aria-label="Find a component" placeholder="Find a component or path"
+        value={search} onChange={event => setSearch(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Escape') setSearch('')
+          if (event.key === 'Enter' && matches[0]) { onAnchor(matches[0].id); onSelect(matches[0]); setSearch('') }
+        }}/></div>
+      {search.trim() && <div className="component-results">
+        {matches.length ? matches.map(node => <button key={node.id} type="button" onClick={() => {
+          onAnchor(node.id); onSelect(node); setSearch('')
+        }}><strong>{node.label}</strong><small>{node.path}</small></button>) : <p>No matching components.</p>}
+      </div>}
+      <span>{graph.nodes.length.toLocaleString()} components</span>
+    </div>
     <div className="canvas">
-      <svg role="img" aria-label="Directed architecture diagram" viewBox="0 0 700 375">
+      <svg role="group" aria-label="Directed architecture diagram" viewBox="0 0 700 375">
         <defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#657988"/></marker></defs>
         <g transform={'translate(350 187) scale(' + zoom + ') translate(-350 -187)'}>
           {graph.edges.map((edge, index) => {
@@ -59,8 +81,15 @@ export function Diagram({ graph, anchor, selected, onSelect, onAnchor }: {
             const x1 = from.x + (rightward ? SIZE.width : 0), x2 = to.x + (rightward ? 0 : SIZE.width)
             const y1 = from.y + SIZE.height / 2, y2 = to.y + SIZE.height / 2
             const mid = (x1 + x2) / 2
-            return <path key={index} d={'M' + x1 + ' ' + y1 + ' C' + mid + ' ' + y1 + ' ' + mid + ' ' + y2 + ' ' + x2 + ' ' + y2}
-              className={'edge ' + edge.origin} markerEnd="url(#arrow)"><title>{edge.relation} · {edge.origin}</title></path>
+            const shape = 'M' + x1 + ' ' + y1 + ' C' + mid + ' ' + y1 + ' ' + mid + ' ' + y2 + ' ' + x2 + ' ' + y2
+            const label = from.node.label + ' ' + edge.relation + ' ' + to.node.label
+            return <g key={edge.id ?? index} className={'edge-control ' + (edge === selectedEdge ? 'active' : '')}
+              role="button" aria-label={label} tabIndex={0} onClick={() => onEdge(edge)}
+              onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onEdge(edge) } }}>
+              <path d={shape} className="edge-hit"/>
+              <path d={shape} className={'edge ' + edge.origin} markerEnd="url(#arrow)"/>
+              <title>{label} · {edge.origin}</title>
+            </g>
           })}
           {positioned.map(({ node, x, y }) => {
             const active = node.id === selected

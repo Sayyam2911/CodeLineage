@@ -247,6 +247,7 @@ class Interviews:
                 rendered = turn(records, session, "assistant", proposal["summary"], purpose="readback",
                                 proposalId=proposal_id)
                 proposal["readbackTurnId"] = rendered["id"]
+                event(records, session, "proposal.readback", proposalId=proposal_id)
                 records.put(f"proposals:{session_id}", proposal_id, proposal)
                 records.put("sessions", session_id, session)
             return self.public(session)
@@ -318,6 +319,7 @@ class Interviews:
             receipt = {"proposalId": proposal["id"], "readbackTurnId": readback["id"],
                        "assentTurnId": assent["id"], "revision": revision, "claim": claim}
             records.put(f"receipts:{session_id}", proposal["id"], receipt)
+            session["latestReceipt"] = receipt
             state.update(revision=revision, snapshotId=session["snapshotId"])
             records.put("lineage", session["repo"], state)
             session["revision"] = revision
@@ -366,6 +368,13 @@ def interview_routes(service: Interviews) -> APIRouter:
     @router.get("/{session_id}")
     def get_session(session_id: str, authorization: str = Header(default="")):
         return current(session_id, authorization)
+
+    @router.get("/{session_id}/turns")
+    def get_turns(session_id: str, authorization: str = Header(default="")):
+        with service.database.transaction() as records:
+            service.authorize(records, session_id, authorization)
+            rows = records.items(f"turns:{session_id}")
+        return sorted((row for _, row in rows), key=lambda row: row["seq"])
 
     @router.post("/{session_id}/answer")
     def answer(session_id: str, body: Answer, authorization: str = Header(default="")):

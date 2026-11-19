@@ -164,7 +164,7 @@ class Snapshots:
         self.manifest(snapshot)
         return json.loads((self.location(snapshot) / "graph.json").read_text())
 
-    def source(self, snapshot: str, path: str, start: int, end: int) -> dict:
+    def source(self, snapshot: str, path: str, start: int, end: int | None = None) -> dict:
         path = relative_path(path)
         manifest = self.manifest(snapshot)
         item = manifest["files"].get(path)
@@ -172,10 +172,12 @@ class Snapshots:
             raise FileNotFoundError(path)
         if not item["text"]:
             raise ValueError("This file has no UTF-8 source excerpt.")
-        if start < 1 or end < start or end - start >= 300:
+        if start < 1 or (end is not None and (end < start or end - start >= 300)):
             raise ValueError("Select an inclusive range of at most 300 lines.")
         lines = read_source_lines(self.location(snapshot) / "source" / path)
-        if end > len(lines):
+        if end is None:
+            end = min(len(lines), start + 39)
+        if end > len(lines) or start > len(lines):
             raise ValueError(f"This file has {len(lines)} lines.")
         return {
             "path": path, "commit": manifest["commit"],

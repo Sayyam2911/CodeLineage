@@ -127,7 +127,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return head(records, repo) | {"repo": repo}
 
     @app.get("/snapshots/{id_}/source")
-    def snapshot_source(id_: str, path: str, start: int, end: int):
+    def snapshot_source(id_: str, path: str, start: int = 1, end: int | None = None):
         try:
             return snapshots.source(id_, path, start, end)
         except FileNotFoundError as exc:
