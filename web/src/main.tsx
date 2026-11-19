@@ -6,39 +6,20 @@ import {
   Code2, FileCode, GitBranch, GitFork, Github, LoaderCircle, Search, Send, SquareTerminal,
 } from 'lucide-react'
 import { Diagram } from './Diagram'
+import { Home } from './Home'
 import { ClaimEntry, Coverage, EvidenceLinks, PriorReview } from './Review'
 import { Voice } from './Voice'
 import { ApiError, query, request, sleep } from './api'
 import type { Analysis, Context, Edge, Evidence, Excerpt, Graph, Manifest, Mode, Node, Review, Revision, Scan, Session, SessionEvent, Turn } from './api'
+import '@fontsource-variable/geist'
+import '@fontsource/instrument-serif/latin-400.css'
+import '@fontsource/instrument-serif/latin-400-italic.css'
 import './styles.css'
 
 const healthchecks = 'https://github.com/healthchecks/healthchecks'
 const storageKey = 'codelineage-session'
 type SessionKey = Pick<Session, 'id' | 'token'>
 type Operation = 'annotate' | 'add_component' | 'add_connection'
-
-function Home({ onSelect }: { onSelect: (mode: Mode) => void }) {
-  return <main className="home">
-    <div className="home-grid">
-      <div className="intro">
-        <h1>Find the <em>why</em><br/>behind your code.</h1>
-        <p>Capture architecture decisions in conversation. Give the next developer the context and source evidence to understand them.</p>
-      </div>
-      <div className="home-choices">
-        <button className="action-card update" onClick={() => onSelect('update')}>
-          <span className="action-icon"><GitFork size={22}/></span>
-          <span><strong>Create or update code lineage</strong><small>Analyze a GitHub repository and record its design rationale.</small></span>
-          <ArrowUpRight className="action-arrow" size={20}/>
-        </button>
-        <button className="action-card" onClick={() => onSelect('understand')}>
-          <span className="action-icon"><BookOpen size={22}/></span>
-          <span><strong>Understand code lineage</strong><small>Ask questions about a reviewed architecture and open the underlying evidence.</small></span>
-          <ArrowUpRight className="action-arrow" size={20}/>
-        </button>
-      </div>
-    </div>
-  </main>
-}
 
 function Intake({ mode, onOpen, onBack, onSwitch }: {
   mode: Mode; onOpen: (session: Session) => void; onBack: () => void; onSwitch: () => void
