@@ -12,3 +12,10 @@ The product contract and acceptance scenarios are in [Agora-Design-Decisions.md]
 | 6. Deployment and handoff | Cloud Run service and scan job, private Cloud Storage, resumable Cloud Tasks, Neo4j, documented local and managed configuration | Exercise storage, task retry, database and UI checks. Run the pinned demo against the managed deployment. |
 
 The demo uses Healthchecks v5.0.3 at `51a503531d845fc11d5ef270d576c59c300e3620`. The submission target is 21 November 2026 at 12:30 PM IST.
+
+## Verification status
+
+- The pinned Healthchecks import and cache reuse passed with real Graphify. The mixed-language fixture exercises readable text outside the parser coverage.
+- Backend tests cover scoped retrieval, ordered relationships, returning reviews, interruption, stale approvals, single-revision replay, and fresh read-only sessions. Neo4j is exercised against a disposable real instance.
+- Browser acceptance covers both text workflows and source attribution. The managed pipeline has local adapter and retry checks.
+- Live Agora/Murf audio, spoken confirmation, and the managed GCP deployment are open acceptance items. Voice proposals currently require explicit confirmation in the browser.

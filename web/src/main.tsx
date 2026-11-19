@@ -14,6 +14,7 @@ import './styles.css'
 const healthchecks = 'https://github.com/healthchecks/healthchecks'
 const storageKey = 'codelineage-session'
 type SessionKey = Pick<Session, 'id' | 'token'>
+type Operation = 'annotate' | 'add_component' | 'add_connection'
 
 function Home({ onSelect }: { onSelect: (mode: Mode) => void }) {
   return <main className="home">
@@ -57,8 +58,9 @@ function Intake({ mode, onOpen, onBack, onSwitch }: {
       if (mode === 'update') {
         setProgress('Resolving the GitHub commit…')
         let scan = await request<Scan>('/scans', { url, ref: ref.trim() || null, scope: scope.trim() || null })
-        while (scan.status === 'queued' || scan.status === 'scanning') {
-          setProgress(scan.status === 'queued' ? 'Scan queued…' : 'Capturing source and extracting structure…')
+        while (scan.status === 'queued' || scan.status === 'scanning' || scan.status === 'analyzing') {
+          const labels = { queued: 'Scan queued…', scanning: 'Capturing source and extracting structure…', analyzing: 'Reviewing source evidence…' }
+          setProgress(labels[scan.status])
           await sleep(850)
           scan = await request<Scan>('/scans/' + scan.id)
         }
@@ -120,6 +122,12 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
   const [first, setFirst] = useState(1)
   const [last, setLast] = useState(1)
   const [input, setInput] = useState('')
+  const [operation, setOperation] = useState<Operation>('annotate')
+  const [changeLabel, setChangeLabel] = useState('')
+  const [related, setRelated] = useState('')
+  const [scopes, setScopes] = useState('')
+  const [supersedes, setSupersedes] = useState('')
+  const [exceptionTo, setExceptionTo] = useState('')
   const [result, setResult] = useState<Context | null>(null)
   const [asked, setAsked] = useState('')
   const [receipt, setReceipt] = useState<Revision | null>(null)
@@ -155,6 +163,7 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
   function focusTopic(active: typeof topic) {
     if (!active) return
     setAnchor(active.targetId); setSelected(active.targetId)
+    setOperation('annotate'); setChangeLabel(''); setRelated(''); setScopes(''); setSupersedes(''); setExceptionTo('')
     const ref = active.evidence.find(item => item.kind === 'source')
     if (ref) void showEvidence(ref)
   }
@@ -177,6 +186,7 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
 
   async function applied(change: Revision) {
     setReceipt(change)
+    setOperation('annotate'); setChangeLabel(''); setRelated(''); setScopes(''); setSupersedes(''); setExceptionTo('')
     setApplying(true)
     try {
       const reference = change.claim.evidence.find(item => item.kind === 'source') ?? change.claim.evidence.at(-1)
@@ -268,7 +278,12 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
     const text = input.trim()
     if (!text) return
     if (interview) {
-      await mutate<Session>('/answer', { text }, 'Preparing read-back…', async staged => {
+      const change = {
+        text, operation, scope: scopes.trim() ? scopes.split(',').map(value => value.trim()).filter(Boolean) : null,
+        targetId: selected, relatedId: related || null, label: changeLabel.trim() || null,
+        supersedes: supersedes || null, exceptionTo: exceptionTo || null,
+      }
+      await mutate<Session>('/answer', change, 'Preparing read-back…', async staged => {
         const reviewed = staged.pending
           ? await request<Session>(path + '/readback', { proposalId: staged.pending.id }, session.token)
           : staged
@@ -375,7 +390,7 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
                 {ref.kind === 'interview' ? 'Interview turn' : (ref.path ?? 'Source') + ':' + ref.start}</button>)}</div>
           </div>)}
           {result.findings.map(finding => <div className="context-entry" key={finding.id}>
-            <strong>{finding.statement}</strong><p>Code evidence</p>
+            <strong>{finding.statement}</strong><p>{finding.origin === 'inference' ? 'Model inference' : 'Code evidence'}</p>
             {finding.evidence[0] && <button className="quiet evidence-link"
               onClick={() => void showEvidence(finding.evidence[0])}>Open supporting lines</button>}
           </div>)}
@@ -383,6 +398,35 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
           {result.documents.map(doc => <a key={doc.path} className="quiet evidence-link" href={doc.url} target="_blank" rel="noreferrer">{doc.path} <ArrowUpRight size={13}/></a>)}
           {result.unknown && <p className="subtle">The reviewed lineage has no confirmed rationale for that question.</p>}
         </div>}
+        {interview && !session.finished && topic && !receipt && <details className="change-options">
+          <summary>Scope or structural change</summary>
+          <div className="review-options">
+            <label>Change type<select value={operation} onChange={event => setOperation(event.target.value as Operation)}>
+              <option value="annotate">Annotate component</option><option value="add_component">Add component</option>
+              <option value="add_connection">Add connection</option>
+            </select></label>
+            <label>Scope files or directories<input value={scopes} placeholder={topic.scope}
+              onChange={event => setScopes(event.target.value)}/></label>
+            {operation !== 'annotate' && <label>{operation === 'add_component' ? 'Component name' : 'Connection type'}
+              <input value={changeLabel} onChange={event => setChangeLabel(event.target.value)}/></label>}
+            {operation === 'add_connection' && <label>Connect selected component to
+              <select value={related} onChange={event => setRelated(event.target.value)}>
+                <option value="">Choose a component</option>
+                {graph?.nodes.filter(node => node.id !== selected).map(node => <option key={node.id} value={node.id}>
+                  {node.label}{node.path ? ' · ' + node.path : ''}</option>)}
+              </select></label>}
+            {!!graph?.claims.length && <>
+              <label>Supersede a claim<select value={supersedes} onChange={event => setSupersedes(event.target.value)}>
+                <option value="">Keep existing claims</option>
+                {graph.claims.map(claim => <option key={claim.claimId} value={claim.claimId}>{claim.title}</option>)}
+              </select></label>
+              <label>Exception to<select value={exceptionTo} onChange={event => setExceptionTo(event.target.value)}>
+                <option value="">No exception</option>
+                {graph.claims.map(claim => <option key={claim.claimId} value={claim.claimId}>{claim.title}</option>)}
+              </select></label>
+            </>}
+          </div>
+        </details>}
         {!session.finished && (!interview || (topic && !receipt)) && <form className="composer" onSubmit={send}>
           <input aria-label={interview ? 'Interview answer' : 'Question'} value={input}
             placeholder={interview ? (session.pending ? 'Type a correction…' : 'Type your answer…') : 'Ask why a part of this code behaves the way it does…'}

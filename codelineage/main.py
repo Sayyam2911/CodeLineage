@@ -1,23 +1,21 @@
 """CodeLineage HTTP service."""
 
-import logging
 import os
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Lock
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from codelineage.cloud import CloudPipeline, create_stores
 from codelineage.interview import Interviews, interview_routes
 from codelineage.knowledge import Knowledge, head
-from codelineage.store import Database
-from codelineage.snapshots import Snapshots, relative_path, repo_name, resolve_commit, scan_id
-
+from codelineage.scans import RUNNING, Scans
+from codelineage.snapshots import relative_path, repo_name, resolve_commit
 from codelineage.voice import voice_routes
-
-logger = logging.getLogger(__name__)
 
 
 class ScanRequest(BaseModel):
@@ -27,17 +25,17 @@ class ScanRequest(BaseModel):
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
-    data_dir = data_dir or Path(os.getenv("CODELINEAGE_DATA", ".data"))
-    snapshots = Snapshots(data_dir / "snapshots")
-    database = Database(data_dir / "lineage.sqlite3")
+    directory = data_dir or Path(os.getenv("CODELINEAGE_DATA", ".data"))
+    snapshots, database = create_stores(directory)
     knowledge = Knowledge(snapshots, database)
-    jobs: dict[str, dict] = {}
-    lock = Lock()
+    cloud = CloudPipeline()
+    scans = Scans(knowledge, cloud)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan") as worker:
             app.state.worker = worker
+            scans.recover_local(worker)
             yield
 
     app = FastAPI(title="CodeLineage", lifespan=lifespan)
@@ -45,22 +43,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     interviews = Interviews(knowledge)
     app.include_router(interview_routes(interviews))
     app.include_router(voice_routes(interviews))
-
-    def run_scan(id_: str, repo: str, commit: str, scope: str) -> None:
-        with lock:
-            jobs[id_] = {**jobs[id_], "status": "scanning"}
-        try:
-            manifest = snapshots.capture(repo, commit, scope)
-            findings = knowledge.prepare(id_)
-            result = {"analysis": findings["mode"], "status": "partial" if manifest["coverage"].get("failed") else "ready",
-                      "snapshotId": id_, "coverage": manifest["coverage"]}
-        except ValueError as exc:
-            result = {"status": "failed", "error": str(exc)}
-        except Exception:
-            logger.exception("Scan %s failed", id_)
-            result = {"status": "failed", "error": "GitHub capture or structural extraction failed. Retry the scan."}
-        with lock:
-            jobs[id_] = {**jobs[id_], **result}
 
     @app.get("/health")
     def health():
@@ -72,36 +54,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             repo = repo_name(request.url)
             scope = relative_path(request.scope) if request.scope else ""
             commit = resolve_commit(repo, request.ref)
+            scan, reused = scans.begin(repo, commit, scope)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        id_ = scan_id(repo, commit, scope)
-        common = {"id": id_, "repo": repo, "commit": commit, "scope": scope}
-        try:
-            manifest = snapshots.manifest(id_)
-        except FileNotFoundError:
-            pass
-        else:
-            findings = knowledge.prepare(id_)
+        if scan["status"] not in RUNNING:
             response.status_code = 200
-            return {**common, "analysis": findings["mode"], "status": "partial" if manifest["coverage"].get("failed") else "ready",
-                    "snapshotId": id_, "coverage": manifest["coverage"], "reused": True}
-        with lock:
-            existing = jobs.get(id_)
-            if existing and existing["status"] != "failed":
-                return {**existing, "reused": True}
-            jobs[id_] = {**common, "status": "queued"}
-            app.state.worker.submit(run_scan, id_, repo, commit, scope)
-            return {**jobs[id_], "reused": False}
+        if not reused:
+            app.state.worker.submit(scans.dispatch, scan["id"])
+        return scan | {"reused": reused}
 
     @app.get("/scans/{id_}")
     def scan_status(id_: str):
-        with lock:
-            if id_ in jobs:
-                return jobs[id_]
-        manifest = snapshot_manifest(id_)
-        return {key: manifest[key] for key in ("id", "repo", "commit", "scope", "coverage")} | {
-            "status": "partial" if manifest["coverage"].get("failed") else "ready", "snapshotId": id_,
-        }
+        try:
+            return scans.get(id_)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Scan not found.") from exc
+
+    @app.post("/internal/analysis/{id_}/{attempt}/{cursor}", include_in_schema=False)
+    def analysis_task(id_: str, attempt: str, cursor: int, authorization: str = Header(default="")):
+        if not cloud.authorized(authorization):
+            raise HTTPException(403, "The analysis task identity is required.")
+        try:
+            job = scans.get(id_)
+        except FileNotFoundError:
+            return {"skipped": True}
+        if job.get("attempt") != attempt:
+            return {"skipped": True}
+        state = scans.on_task(id_, cursor)
+        if not state["done"] and state["cursor"] > cursor:
+            cloud.enqueue(id_, attempt, state["cursor"])
+        return {"cursor": state["cursor"], "done": state["done"]}
 
     @app.get("/snapshots/{id_}")
     def snapshot_manifest(id_: str):
@@ -128,6 +110,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    @app.get("/snapshots/{id_}/findings")
+    def snapshot_findings(id_: str):
+        try:
+            return knowledge.findings(id_)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Snapshot not found.") from exc
+
     @app.get("/lineages")
     def lineage(url: str):
         try:
@@ -145,6 +134,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot or source path not found.") from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+
+    dist = Path(os.getenv("CODELINEAGE_WEB", str(Path(__file__).resolve().parents[1] / "web" / "dist")))
+    if (dist / "index.html").is_file():
+        app.mount("/assets", StaticFiles(directory=dist / "assets"), name="web-assets")
+
+        @app.get("/", include_in_schema=False)
+        def website():
+            return FileResponse(dist / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app
 

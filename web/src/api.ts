@@ -12,6 +12,7 @@ export type Evidence = {
 
 export type Topic = {
   id: string
+  origin: string
   title: string
   question: string
   statement: string
@@ -78,7 +79,7 @@ export type Manifest = {
 export type Excerpt = { url: string; commit: string; path: string; lines: { number: number; text: string }[] }
 export type Scan = {
   id: string
-  status: 'queued' | 'scanning' | 'ready' | 'partial' | 'failed'
+  status: 'queued' | 'scanning' | 'analyzing' | 'ready' | 'partial' | 'failed'
   error?: string
   snapshotId?: string
   reused?: boolean

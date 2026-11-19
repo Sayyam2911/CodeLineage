@@ -25,7 +25,7 @@ function layout(graph: Graph, anchor: string | null): Positioned[] {
     ...sides.flatMap((side, column) => side.map((node, index) => ({
       node,
       x: column === 0 ? 34 : 492,
-      y: 165 + (index - (side.length - 1) / 2) * 72,
+      y: [165, 93, 237, 21][index],
     }))),
   ]
 }

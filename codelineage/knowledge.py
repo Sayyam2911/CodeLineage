@@ -90,30 +90,59 @@ class Knowledge:
             records.put("findings", snapshot, result)
         return result
 
+    def findings(self, snapshot: str) -> dict:
+        local = self.prepare(snapshot)
+        with self.database.transaction() as records:
+            model = records.get("semantic", snapshot)
+        if not model:
+            return local
+        model_paths = {item["scope"] for item in model["items"]}
+        return model | {
+            "items": [item for item in local["items"] if item["priority"] == 100 or item["scope"] not in model_paths]
+                     + model["items"],
+            "reviewedPaths": sorted(set(local["reviewedPaths"]) | set(model["reviewedPaths"])),
+        }
+
     def compare(self, snapshot: str, baseline: str | None = None) -> dict:
         current = self.snapshots.manifest(snapshot)
         with self.database.transaction() as records:
             state = head(records, current["repo"])
-            applicable = [(scope, value) for scope, value in state["baselines"].items()
-                          if contains(scope, current["scope"])]
-            if not baseline and applicable:
-                baseline = max(applicable, key=lambda pair: len(pair[0]))[1]
+            baselines = {scope: value for scope, value in state["baselines"].items()
+                         if contains(scope, current["scope"]) or contains(current["scope"], scope)}
+            enclosing = [(scope, value) for scope, value in baselines.items() if contains(scope, current["scope"])]
+            if baseline:
+                baselines = {current["scope"]: baseline}
+            elif enclosing:
+                baseline = max(enclosing, key=lambda pair: len(pair[0]))[1]
             claims = self.claims(records, current["repo"], state["revision"])
-        result = {"baseline": baseline, "snapshotId": snapshot, "changedPaths": [],
+        result = {"baseline": baseline, "scopeBaselines": baselines, "snapshotId": snapshot, "changedPaths": [],
                   "affectedPaths": [], "priorClaims": [], "wideReview": False}
-        if not baseline:
+        if not baselines:
             return result
-        previous = self.snapshots.manifest(baseline)
-        if previous["repo"] != current["repo"]:
+        previous = {id_: self.snapshots.manifest(id_) for id_ in set(baselines.values())}
+        if any(item["repo"] != current["repo"] for item in previous.values()):
             raise ValueError("The baseline belongs to a different repository.")
-        old, new = previous["files"], current["files"]
-        changed = {path for path in old.keys() | new.keys()
-                   if contains(current["scope"], path) and
-                   (old.get(path) or {}).get("sha256", old.get(path)) !=
-                   (new.get(path) or {}).get("sha256", new.get(path))}
-        old_graph, current_graph = self.snapshots.graph(baseline), self.snapshots.graph(snapshot)
+        new = current["files"]
+        paths = set(new)
+        for manifest in previous.values():
+            paths.update(manifest["files"])
+
+        def signature(item):
+            return (item.get("sha256"), item.get("linkTarget")) if item else None
+
+        changed = set()
+        scopes = sorted(baselines, key=len, reverse=True)
+        for path in paths:
+            if not contains(current["scope"], path):
+                continue
+            prior_scope = next((scope for scope in scopes if contains(scope, path)), None)
+            if prior_scope is not None:
+                old = previous[baselines[prior_scope]]["files"]
+                if signature(old.get(path)) != signature(new.get(path)):
+                    changed.add(path)
+        graphs = [self.snapshots.graph(id_) for id_ in sorted({snapshot, *previous})]
         affected = set(changed)
-        for graph in (old_graph, current_graph):
+        for graph in graphs:
             nodes = {item["id"]: item["path"] for item in graph["nodes"]}
             for edge in graph["edges"]:
                 if nodes.get(edge["target"]) in changed and nodes.get(edge["source"]):
@@ -162,7 +191,7 @@ class Knowledge:
                 "revision": revision, "snapshotId": snapshot}
 
     def topics(self, snapshot: str) -> list[dict]:
-        findings = self.prepare(snapshot)["items"]
+        findings = self.findings(snapshot)["items"]
         review = self.compare(snapshot)
         affected = set(review["affectedPaths"])
         repo = self.snapshots.manifest(snapshot)["repo"]
@@ -210,7 +239,7 @@ class Knowledge:
             return len(query & terms(text)) + 6 * any(contains(s, p) for s in scopes for p in paths)
 
         claims = sorted((item for item in graph["claims"] if score(item)), key=score, reverse=True)[:8]
-        findings = sorted((item for item in self.prepare(snapshot)["items"] if score(item)),
+        findings = sorted((item for item in self.findings(snapshot)["items"] if score(item)),
                           key=score, reverse=True)[:5]
         citations = []
         for item in [*claims, *findings]:

@@ -15,11 +15,11 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: .55; }
 a { color: inherit; }
-button:focus-visible, input:focus-visible, summary:focus-visible, [tabindex]:focus-visible, a:focus-visible {
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, [tabindex]:focus-visible, a:focus-visible {
   outline: 2px solid var(--focus); outline-offset: 3px;
 }
 button, a { -webkit-tap-highlight-color: transparent; }
@@ -54,7 +54,7 @@ h1, h2, h3, p { margin: 0; }
 .intake p { color: var(--muted); margin-top: 10px; line-height: 1.55; }
 .intake form { margin-top: 25px; display: grid; gap: 10px; }
 .intake form > label, .review-options label { font-size: 13px; font-weight: 650; }
-input { color: #e6edf1; background: #111a23; border: 1px solid var(--border); border-radius: 8px; min-width: 0; padding: 9px 11px; }
+input, select { color: #e6edf1; background: #111a23; border: 1px solid var(--border); border-radius: 8px; min-width: 0; padding: 9px 11px; }
 input::placeholder { color: #8594a4; }
 .input-icon { display: flex; align-items: center; gap: 8px; padding: 0 11px; border: 1px solid var(--border); border-radius: 8px; background: #111a23; color: var(--muted); }
 .input-icon input { border: 0; background: transparent; padding: 12px 0; width: 100%; }
@@ -156,3 +156,6 @@ summary { cursor: pointer; font-size: 13px; }
 .voice-controls { flex-wrap: wrap; }
 .voice-controls .quiet { color: var(--accent); }
 .voice-error { color: #ffd3cd; }
+
+.change-options { padding: 3px 0; }
+.change-options .review-options { max-width: 780px; }

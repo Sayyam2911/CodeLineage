@@ -180,9 +180,19 @@ class Interviews:
             raise HTTPException(422, "A claim cannot supersede its own exception target.")
         # The typed client explicitly displays this same text and scope before approval.
         statement = " ".join(answer.split())
-        summary = f"{statement}\nScope: {', '.join(scopes)}"
-        if request.operation != "annotate":
-            summary += f"\nChange: {request.operation.replace('_', ' ')} — {request.label.strip()}"
+        details = [f"Scope: {', '.join(scopes)}"]
+        node_labels = {node["id"]: node["label"] for node in graph["nodes"]}
+        if request.operation == "add_component":
+            details.append(f"Add component {request.label.strip()}")
+        elif request.operation == "add_connection":
+            details.append(f"Add {node_labels[target]} → {node_labels[request.relatedId]} ({request.label.strip()})")
+        elif target:
+            details.append(f"Target: {node_labels[target]}")
+        if request.supersedes:
+            details.append("Supersede " + next(c["title"] for c in graph["claims"] if c["claimId"] == request.supersedes))
+        if request.exceptionTo:
+            details.append("Exception to " + next(c["title"] for c in graph["claims"] if c["claimId"] == request.exceptionTo))
+        summary = statement + "\n" + " · ".join(details)
         with self.database.transaction(write=True) as records:
             session = self.authorize(records, session_id, auth, voice=voice_answer is not None)
             self.writable(session)

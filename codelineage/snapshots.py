@@ -70,6 +70,13 @@ def resolve_commit(repo: str, ref: str | None) -> str:
     raise ValueError("The selected ref did not resolve to a commit.")
 
 
+def read_source_lines(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8")
+    if not text:
+        return []
+    return text.removesuffix("\n").split("\n")
+
+
 def scan_id(repo: str, commit: str, scope: str) -> str:
     return hashlib.sha256(f"{repo}\0{commit}\0{scope}\0{ANALYZER}".encode()).hexdigest()
 
@@ -98,7 +105,8 @@ def unpack(archive: Path, root: Path) -> dict[str, dict]:
             if ".git" in path.parts[1:]:
                 raise ValueError("Unexpected Git metadata in archive.")
             if not member.isfile():
-                files[relative] = {"size": 0, "text": False, "structure": "non-regular"}
+                files[relative] = {"size": 0, "text": False, "structure": "non-regular",
+                                   "linkTarget": member.linkname or None}
                 continue
             total += member.size
             if total > MAX_BYTES:
@@ -166,7 +174,7 @@ class Snapshots:
             raise ValueError("This file has no UTF-8 source excerpt.")
         if start < 1 or end < start or end - start >= 300:
             raise ValueError("Select an inclusive range of at most 300 lines.")
-        lines = (self.location(snapshot) / "source" / path).read_text(encoding="utf-8").splitlines()
+        lines = read_source_lines(self.location(snapshot) / "source" / path)
         if end > len(lines):
             raise ValueError(f"This file has {len(lines)} lines.")
         return {
@@ -190,6 +198,10 @@ class Snapshots:
             files = unpack(archive, source)
             if scope and not any(path.startswith(scope + "/") for path in files):
                 raise ValueError("The selected directory is absent at this commit.")
+            if scope:
+                for path, item in files.items():
+                    if item["text"] and not path.startswith(scope + "/"):
+                        item["structure"] = "out-of-scope"
             result = artifact / "graph.json"
             selection = work / "selection.json"
             selection.write_text(json.dumps([
