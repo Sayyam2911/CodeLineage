@@ -12,8 +12,6 @@ import { Voice } from './Voice'
 import { ApiError, query, request, sleep } from './api'
 import type { Analysis, Context, Edge, Evidence, Excerpt, Graph, Manifest, Mode, Node, Review, Revision, Scan, Session, SessionEvent, Turn } from './api'
 import '@fontsource-variable/geist'
-import '@fontsource/instrument-serif/latin-400.css'
-import '@fontsource/instrument-serif/latin-400-italic.css'
 import './styles.css'
 
 const healthchecks = 'https://github.com/healthchecks/healthchecks'

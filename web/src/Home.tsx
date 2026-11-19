@@ -11,8 +11,8 @@ export function Home({ onSelect }: { onSelect: (mode: Mode) => void }) {
   return <main className={'home' + (enter ? ' home-enter' : '')} aria-labelledby="home-title">
     <div className="home-grid">
       <div className="intro">
-        <h1 id="home-title"><span>Architecture decisions</span><em>with their evidence.</em></h1>
-        <p>Review a GitHub repository, record why the code works the way it does, and give the next developer the exact source.</p>
+        <h1 id="home-title">Understand the decisions <span>behind your code.</span></h1>
+        <p>Scan a GitHub repository, capture design rationale in conversation, and connect each decision to the exact source.</p>
         <div className="home-choices">
           <button className="home-action home-action-primary" onClick={() => onSelect('update')}>
             <GitFork size={17}/><span>Create or update code lineage</span><ArrowRight size={18}/>
@@ -34,7 +34,7 @@ export function Home({ onSelect }: { onSelect: (mode: Mode) => void }) {
               <div className="example-node"><span/>Check changes status</div>
               <div className="example-track"/>
               <div className="example-node"><span/>Select eligible channels</div>
-              <div className="example-track"/>
+              <div className="example-track live"/>
               <div className="example-node active"><span/>Order by delivery time</div>
             </div>
           </div>
