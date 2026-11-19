@@ -79,12 +79,12 @@ class Interviews:
         self.snapshots = knowledge.snapshots
 
     @staticmethod
-    def authorize(records, session_id: str, authorization: str) -> dict:
+    def authorize(records, session_id: str, authorization: str, *, voice: bool = False) -> dict:
         session = records.get("sessions", session_id)
         scheme, _, token = authorization.partition(" ")
-        if not session or scheme.lower() != "bearer" or not hmac.compare_digest(
-            session["tokenHash"], token_digest(token)
-        ):
+        connection = records.get("voice", session_id) if voice else None
+        expected = connection["toolHash"] if voice and connection else session["tokenHash"] if not voice and session else ""
+        if not session or scheme.lower() != "bearer" or not hmac.compare_digest(expected, token_digest(token)):
             raise HTTPException(401, "A valid session token is required.")
         return session
 
@@ -141,15 +141,17 @@ class Interviews:
             session["pending"] = None
             event(records, session, f"proposal.{status}", proposalId=pending["id"])
 
-    def stage(self, session_id: str, auth: str, request: Answer) -> dict:
+    def stage(self, session_id: str, auth: str, request: Answer, *, voice_answer: str | None = None) -> dict:
         with self.database.transaction() as records:
-            session = self.authorize(records, session_id, auth)
+            session = self.authorize(records, session_id, auth, voice=voice_answer is not None)
             self.writable(session)
             topic = self.active_topic(session)
         answer = request.text.strip()
         if not answer:
             raise HTTPException(422, "Enter a reason or skip the question.")
         if answer.lower().rstrip(".!?") in {"i don't know", "i don’t know", "not sure", "unknown"}:
+            if voice_answer is not None:
+                raise HTTPException(422, "An unresolved answer does not create a proposal.")
             return self.skip(session_id, auth, topic["id"], answer)
         scopes = request.scope or [topic["scope"]]
         graph = self.knowledge.projection(session["snapshotId"], session["revision"])
@@ -182,12 +184,12 @@ class Interviews:
         if request.operation != "annotate":
             summary += f"\nChange: {request.operation.replace('_', ' ')} — {request.label.strip()}"
         with self.database.transaction(write=True) as records:
-            session = self.authorize(records, session_id, auth)
+            session = self.authorize(records, session_id, auth, voice=voice_answer is not None)
             self.writable(session)
             if self.active_topic(session)["id"] != topic["id"] or session["revision"] != graph["revision"]:
                 raise HTTPException(409, "The review moved to a different topic or revision.")
             self.retire(records, session, "superseded")
-            originating = turn(records, session, "participant", answer, purpose="answer")
+            originating = turn(records, session, "participant", voice_answer or answer, purpose="answer")
             proposal = {
                 "id": secrets.token_hex(16), "status": "pending", "topicId": topic["id"],
                 "title": topic["title"], "statement": statement, "summary": summary, "scopes": scopes,

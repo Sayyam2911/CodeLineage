@@ -5,6 +5,6 @@ const api = 'http://127.0.0.1:8000'
 export default defineConfig({
   plugins: [react()],
   server: {
-    proxy: Object.fromEntries(['/health', '/scans', '/snapshots', '/sessions', '/lineages'].map(path => [path, api])),
+    proxy: Object.fromEntries(['/health', '/scans', '/snapshots', '/sessions', '/lineages', '/voice'].map(path => [path, api])),
   },
 })

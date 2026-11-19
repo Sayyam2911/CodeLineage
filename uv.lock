@@ -3,6 +3,20 @@ revision = 5
 requires-python = ">=3.12, <3.15"
 
 [[package]]
+name = "agora-agents"
+version = "2.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/76/ba/56d091196c783403cdce6f4d809fdc46c87d4dbf9c5c1da716cdc3065a70/agora_agents-2.15.0.tar.gz", hash = "sha256:f478c634e232f025a9f519a805d26541b82bca37913f6027c57a7d9ddcfc9ed8", size = 152977, upload-time = "2026-11-19T09:29:20.575Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/c5/25aabb95b36272338648c4d77177fa878b811a7a63d661d60526e00c5916/agora_agents-2.15.0-py3-none-any.whl", hash = "sha256:c91a7333332a95f09ceb5e00fbd1d3275f56baf3a48ebb68923ce1fdb58fe621", size = 319088, upload-time = "2026-11-19T09:29:19.192Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.7"
 source = { registry = "https://pypi.org/simple" }
@@ -56,6 +70,7 @@ name = "codelineage"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "agora-agents" },
     { name = "fastapi" },
     { name = "graphifyy" },
     { name = "httpx" },
@@ -69,6 +84,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agora-agents", specifier = "==2.15.0" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "graphifyy", specifier = "==0.9.112" },
     { name = "httpx", specifier = ">=0.27,<1" },

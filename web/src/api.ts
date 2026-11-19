@@ -93,7 +93,7 @@ export type Context = {
   unknown: boolean
 }
 export type Revision = { revision: number; claim: Claim }
-export type SessionEvent = { seq: number; revision: number; type: string; receipt?: Revision }
+export type SessionEvent = { seq: number; revision: number; type: string; receipt?: Revision; evidence?: Evidence }
 
 export const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms))
 

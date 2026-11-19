@@ -15,6 +15,8 @@ from codelineage.knowledge import Knowledge, head
 from codelineage.store import Database
 from codelineage.snapshots import Snapshots, relative_path, repo_name, resolve_commit, scan_id
 
+from codelineage.voice import voice_routes
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +42,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     app = FastAPI(title="CodeLineage", lifespan=lifespan)
     app.state.snapshots = snapshots
-    app.include_router(interview_routes(Interviews(knowledge)))
+    interviews = Interviews(knowledge)
+    app.include_router(interview_routes(interviews))
+    app.include_router(voice_routes(interviews))
 
     def run_scan(id_: str, repo: str, commit: str, scope: str) -> None:
         with lock:

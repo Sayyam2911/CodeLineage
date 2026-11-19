@@ -6,6 +6,7 @@ import {
   Code2, FileCode, GitBranch, GitFork, Github, LoaderCircle, Search, Send, SquareTerminal,
 } from 'lucide-react'
 import { Diagram } from './Diagram'
+import { Voice } from './Voice'
 import { query, request, sleep } from './api'
 import type { Context, Evidence, Excerpt, Graph, Manifest, Mode, Node, Revision, Scan, Session, SessionEvent } from './api'
 import './styles.css'
@@ -166,10 +167,10 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
     }
   }
 
-  async function refresh() {
+  async function refresh(advanceCursor = false) {
     const state = await request<Session>(path, undefined, initial.token)
     const next = { ...state, token: initial.token }
-    seq.current = Math.max(seq.current, next.seq)
+    if (advanceCursor) seq.current = Math.max(seq.current, next.seq)
     setSession(previous => previous.seq > next.seq ? previous : next)
     return next
   }
@@ -217,12 +218,13 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
             const item = JSON.parse(data.slice(6)) as SessionEvent
             if (item.seq <= seq.current) continue
             if (item.seq !== seq.current + 1) {
-              const state = await refresh()
+              const state = await refresh(true)
               if (state.revision > shownRevision.current) await loadGraph(state.revision)
               continue
             }
             seq.current = item.seq
             if (item.type === 'revision.applying') setApplying(true)
+            if (item.type === 'evidence.focus' && item.evidence) await showEvidence(item.evidence)
             if (item.type === 'revision.committed' && item.receipt) await applied(item.receipt)
             else if (item.type !== 'revision.applying') await refresh()
           }
@@ -230,7 +232,7 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
       } catch {
         if (!cancelled) {
           try {
-            const state = await refresh()
+            const state = await refresh(true)
             await loadGraph(state.revision)
             setApplying(false)
           } catch {
@@ -341,6 +343,7 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
       <header className="panel-heading"><AudioLines size={20}/><h2>{interview ? 'Interview' : 'Ask the lineage'}</h2>
         <span>{interview && topic && !session.finished ? 'Topic ' + (session.index + 1) + ' of ' + session.topics.length : ''}</span></header>
       <div className="conversation-body">
+        <Voice sessionId={session.id} token={session.token} disabled={session.finished}/>
         {error && <div className="notice error" role="alert"><CircleAlert size={18}/><span>{error}</span></div>}
         {interview && receipt && <div className="receipt" role="status"><Check size={17}/>
           <span>Saved revision {receipt.revision} · {receipt.claim.statement}</span>
@@ -351,7 +354,11 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
         {interview && !session.finished && !topic && <p className="subtle">There are no remaining interview topics for this scan.</p>}
         {session.pending && <div className="readback">
           <strong>Confirm the read-back</strong><p>{session.pending.summary}</p>
-          <div className="controls"><button className="primary" disabled={!!busy || !session.pending.readbackTurnId}
+          <div className="controls">
+            {!session.pending.readbackTurnId && <button className="quiet" disabled={!!busy}
+              onClick={() => void mutate('/readback', { proposalId: session.pending?.id }, 'Acknowledging read-back…')}>
+              I reviewed this summary</button>}
+            <button className="primary" disabled={!!busy || !session.pending.readbackTurnId}
             onClick={() => void mutate<Revision>('/confirm', {
               proposalId: session.pending?.id, readbackTurnId: session.pending?.readbackTurnId,
             }, 'Confirming…', applied)}><Check size={17}/> Confirm and save</button>
