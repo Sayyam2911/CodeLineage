@@ -10,6 +10,7 @@ from threading import Lock
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
+from codelineage.interview import Interviews, interview_routes
 from codelineage.knowledge import Knowledge, head
 from codelineage.store import Database
 from codelineage.snapshots import Snapshots, relative_path, repo_name, resolve_commit, scan_id
@@ -39,6 +40,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     app = FastAPI(title="CodeLineage", lifespan=lifespan)
     app.state.snapshots = snapshots
+    app.include_router(interview_routes(Interviews(knowledge)))
 
     def run_scan(id_: str, repo: str, commit: str, scope: str) -> None:
         with lock:
