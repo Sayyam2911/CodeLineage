@@ -11,8 +11,8 @@ export function Home({ onSelect }: { onSelect: (mode: Mode) => void }) {
   return <main className={'home' + (enter ? ' home-enter' : '')} aria-labelledby="home-title">
     <div className="home-grid">
       <div className="intro">
-        <h1 id="home-title">Understand the decisions <span>behind your code.</span></h1>
-        <p>Scan a GitHub repository, capture design rationale in conversation, and connect each decision to the exact source.</p>
+        <h1 id="home-title">The reasons <em>behind your code.</em></h1>
+        <p>Map a GitHub repository, record the decisions that shaped it, and give your team the source that explains them.</p>
         <div className="home-choices">
           <button className="home-action home-action-primary" onClick={() => onSelect('update')}>
             <GitFork size={17}/><span>Create or update code lineage</span><ArrowRight size={18}/>
@@ -22,6 +22,7 @@ export function Home({ onSelect }: { onSelect: (mode: Mode) => void }) {
           </button>
         </div>
       </div>
+      <div className="example-stage">
       <section className="example-workspace" aria-label="Healthchecks review example">
         <header className="example-title">
           <div><Github size={16}/><strong>Healthchecks</strong><span className="example-divider"/><span>Alert delivery</span></div>
@@ -53,6 +54,7 @@ export function Home({ onSelect }: { onSelect: (mode: Mode) => void }) {
           <div><span>Interview question</span><p>What should happen when a channel has no delivery history?</p></div>
         </footer>
       </section>
+      </div>
     </div>
   </main>
 }

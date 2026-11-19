@@ -52,6 +52,7 @@ export type Session = {
   speaker: string
   topics: Topic[]
   index: number
+  outcomes: Record<string, string>
   seq: number
   revision: number
   pending: Proposal | null

@@ -7,11 +7,12 @@ import {
 } from 'lucide-react'
 import { Diagram } from './Diagram'
 import { Home } from './Home'
-import { ClaimEntry, Coverage, EvidenceLinks, PriorReview } from './Review'
+import { ClaimEntry, Coverage, EvidenceLinks, PriorReview, ReviewTopics } from './Review'
 import { Voice } from './Voice'
 import { ApiError, query, request, sleep } from './api'
 import type { Analysis, Context, Edge, Evidence, Excerpt, Graph, Manifest, Mode, Node, Review, Revision, Scan, Session, SessionEvent, Turn } from './api'
 import '@fontsource-variable/geist'
+import '@fontsource/instrument-serif/latin-400-italic.css'
 import './styles.css'
 
 const healthchecks = 'https://github.com/healthchecks/healthchecks'
@@ -66,9 +67,9 @@ function Intake({ mode, onOpen, onBack, onSwitch }: {
   return <main className="intake">
     <button className="quiet back" onClick={onBack}><ArrowLeft size={16}/> Home</button>
     <div className="intake-body">
-      <span className="action-icon">{mode === 'update' ? <GitFork size={24}/> : <BookOpen size={24}/>}</span>
+      <div className="intake-intro"><span className="action-icon">{mode === 'update' ? <GitFork size={24}/> : <BookOpen size={24}/>}</span>
       <h1>{mode === 'update' ? 'Create or update code lineage' : 'Understand code lineage'}</h1>
-      <p>{mode === 'update' ? 'Pin a repository to a commit and prepare questions grounded in its source.' : 'Open a reviewed repository to explore its architecture and the decisions behind it.'}</p>
+      <p>{mode === 'update' ? 'Choose the repository and commit you want to review. CodeLineage will prepare questions grounded in the source.' : 'Open an existing review to explore the architecture and ask why it works the way it does.'}</p></div>
       <form onSubmit={open}>
         <label htmlFor="repository">Public GitHub repository</label>
         <div className="input-icon"><Github size={18}/><input id="repository" type="url"
@@ -375,11 +376,26 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
       <span className="workspace-mode">{interview ? 'Lineage review' : 'Read-only lineage'}</span>
     </div>
     {connectionIssue && <div className="notice connection" role="status">Reconnecting to the review…</div>}
-    <div className="review-strips">
-      {manifest && <Coverage manifest={manifest} analysis={analysis}/>}
-      {review && Object.keys(review.scopeBaselines).length > 0 &&
-        <PriorReview review={review} manifest={manifest} onOpen={ref => void showEvidence(ref)}/>}
-    </div>
+    <div className="workbench">
+      <aside className="workbench-rail" aria-label="Review navigation">
+        <ReviewTopics session={session} claims={graph?.claims ?? []} onTopic={item => {
+          const ref = item.evidence.find(item => item.kind === 'source')
+          setAnchor(item.targetId); setSelected(item.targetId); setActiveEdge(null)
+          if (ref && !applying) void showEvidence(ref)
+        }} onClaim={claim => {
+          if (claim.targetId && claim.snapshotId === session.snapshotId) {
+            setAnchor(claim.targetId); setSelected(claim.targetId)
+          }
+          const ref = claim.evidence.find(item => item.kind === 'interview') ?? claim.evidence[0]
+          if (ref && !applying) void showEvidence(ref)
+        }}/>
+        <div className="review-strips">
+          {manifest && <Coverage manifest={manifest} analysis={analysis}/>}
+          {review && Object.keys(review.scopeBaselines).length > 0 &&
+            <PriorReview review={review} manifest={manifest} onOpen={ref => void showEvidence(ref)}/>}
+        </div>
+      </aside>
+      <div className="workbench-content">
     <div className="panels">
       <section className="panel">
         <header className="panel-heading"><GitFork size={19}/><h2>Architecture</h2><span>Revision {graph?.revision ?? session.revision}</span></header>
@@ -515,6 +531,8 @@ function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }
         {session.finished && <div className="notice"><Check size={17}/> Review finished.</div>}
       </div>
     </section>
+      </div>
+    </div>
   </main>
 }
 
@@ -553,7 +571,7 @@ function App() {
   return <>
     <header className="topbar">
       <button className="brand" onClick={exit} aria-label="CodeLineage home"><span><GitFork size={22}/></span>CodeLineage</button>
-      {session && <span className="topbar-session"><span/> Active workspace</span>}
+      {session && <span className="topbar-session"><span/> {session.mode === 'update' ? 'Review workspace' : 'Read-only workspace'}</span>}
     </header>
     {restoring ? <main className="intake" role="status"><LoaderCircle className="spin" size={20}/> Restoring review…</main>
       : resumeError ? <main className="intake"><div className="notice error" role="alert">{resumeError}</div><div className="controls resume-actions">

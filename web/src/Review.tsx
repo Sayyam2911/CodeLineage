@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { FileCode, GitCompareArrows, Layers, Search } from 'lucide-react'
-import type { Analysis, Claim, Evidence, Manifest, Review } from './api'
+import { ArrowUpRight, BookOpen, Check, Circle, FileCode, GitCompareArrows, Layers, Search } from 'lucide-react'
+import type { Analysis, Claim, Evidence, Manifest, Review, Session, Topic } from './api'
 
 const coverageNames: Record<string, string> = {
   parsed: 'Parsed', unparsed: 'Unparsed text', failed: 'Parser failed',
@@ -77,4 +77,34 @@ export function ClaimEntry({ claim, onOpen }: { claim: Claim; onOpen: (item: Evi
     <strong>{claim.statement}</strong><p>Confirmed by {claim.speaker} · {claim.scopes.join(', ')}</p>
     <EvidenceLinks items={claim.evidence} onOpen={onOpen}/>
   </article>
+}
+
+export function ReviewTopics({ session, claims, onTopic, onClaim }: {
+  session: Session
+  claims: Claim[]
+  onTopic: (item: Topic) => void
+  onClaim: (item: Claim) => void
+}) {
+  const update = session.mode === 'update'
+  const outcomes = session.outcomes ?? {}
+  const confirmed = Object.values(outcomes).filter(status => status === 'confirmed').length
+  return <details className="topic-navigation" open>
+    <summary>
+      {update ? <Layers size={16}/> : <BookOpen size={16}/>}
+      <span>{update ? 'Review topics' : 'Reviewed decisions'}</span>
+      <small>{update ? confirmed + '/' + session.topics.length : claims.length}</small>
+    </summary>
+    <div className="topic-list">
+      {update ? session.topics.map((item, i) => <button key={item.id} type="button"
+        aria-current={i === session.index && !session.finished ? 'step' : undefined} onClick={() => onTopic(item)}
+        title={item.title}>
+        {outcomes[item.id] === 'confirmed' ? <Check size={13}/> : <Circle size={11}/>}
+        <span>{item.title}</span><ArrowUpRight size={13}/>
+      </button>) : claims.map(claim => <button key={claim.claimId} type="button" onClick={() => onClaim(claim)} title={claim.statement}>
+        <Check size={13}/><span>{claim.title}</span><ArrowUpRight size={13}/>
+      </button>)}
+      {!(update ? session.topics.length : claims.length) &&
+        <p>{update ? 'No review topics in this scope.' : 'No decisions have been recorded for this view.'}</p>}
+    </div>
+  </details>
 }
