@@ -10,6 +10,8 @@ from threading import Lock
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
+from codelineage.knowledge import Knowledge, head
+from codelineage.store import Database
 from codelineage.snapshots import Snapshots, relative_path, repo_name, resolve_commit, scan_id
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,8 @@ class ScanRequest(BaseModel):
 def create_app(data_dir: Path | None = None) -> FastAPI:
     data_dir = data_dir or Path(os.getenv("CODELINEAGE_DATA", ".data"))
     snapshots = Snapshots(data_dir / "snapshots")
+    database = Database(data_dir / "lineage.sqlite3")
+    knowledge = Knowledge(snapshots, database)
     jobs: dict[str, dict] = {}
     lock = Lock()
 
@@ -41,7 +45,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             jobs[id_] = {**jobs[id_], "status": "scanning"}
         try:
             manifest = snapshots.capture(repo, commit, scope)
-            result = {"status": "partial" if manifest["coverage"].get("failed") else "ready",
+            findings = knowledge.prepare(id_)
+            result = {"analysis": findings["mode"], "status": "partial" if manifest["coverage"].get("failed") else "ready",
                       "snapshotId": id_, "coverage": manifest["coverage"]}
         except ValueError as exc:
             result = {"status": "failed", "error": str(exc)}
@@ -70,8 +75,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except FileNotFoundError:
             pass
         else:
+            findings = knowledge.prepare(id_)
             response.status_code = 200
-            return {**common, "status": "partial" if manifest["coverage"].get("failed") else "ready",
+            return {**common, "analysis": findings["mode"], "status": "partial" if manifest["coverage"].get("failed") else "ready",
                     "snapshotId": id_, "coverage": manifest["coverage"], "reused": True}
         with lock:
             existing = jobs.get(id_)
@@ -99,11 +105,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found.") from exc
 
     @app.get("/snapshots/{id_}/graph")
-    def snapshot_graph(id_: str):
+    def snapshot_graph(id_: str, revision: int | None = None):
         try:
-            return snapshots.graph(id_)
+            return knowledge.projection(id_, revision)
         except FileNotFoundError as exc:
             raise HTTPException(404, "Snapshot not found.") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/snapshots/{id_}/review")
+    def snapshot_review(id_: str, baseline: str | None = None):
+        try:
+            return knowledge.compare(id_, baseline)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Snapshot or baseline not found.") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/lineages")
+    def lineage(url: str):
+        try:
+            repo = repo_name(url)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        with database.transaction() as records:
+            return head(records, repo) | {"repo": repo}
 
     @app.get("/snapshots/{id_}/source")
     def snapshot_source(id_: str, path: str, start: int, end: int):
