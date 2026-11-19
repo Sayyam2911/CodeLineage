@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { CircleAlert, Layers3, LoaderCircle } from 'lucide-react'
+import { ArrowDown, CircleAlert, Github, LoaderCircle, Workflow } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -47,16 +47,28 @@ export default function CodeLineageApp() {
     setSession(null)
     setRestoring(false)
     setResumeError('')
+    if (window.location.hash) window.history.replaceState(null, '', window.location.pathname + window.location.search)
+    window.scrollTo(0, 0)
   }
 
   return (
     <TooltipProvider delayDuration={200}>
       <a href="#main-content" className="skip-link">Skip to content</a>
       <header className="topbar">
-        <Button type="button" variant="ghost" className="brand" onClick={exit} aria-label="CodeLineage home">
-          <span className="brand-mark"><Layers3 aria-hidden="true"/></span>
-          <span translate="no">CodeLineage</span>
-        </Button>
+        <div className="topbar-content">
+          <Button type="button" variant="ghost" className="brand" onClick={exit} aria-label="CodeLineage home">
+            <Workflow aria-hidden="true" className="brand-mark"/>
+            <span translate="no">CodeLineage</span>
+          </Button>
+          {!session && !restoring && !resumeError && <nav aria-label="Main navigation">
+            <Button asChild variant="ghost" size="sm"><a href="#architecture-demo">Demo <ArrowDown aria-hidden="true"/></a></Button>
+            <Button asChild variant="outline" size="sm">
+              <a href="https://github.com/Sayyam2911/CodeLineage" target="_blank" rel="noreferrer">
+                <Github aria-hidden="true"/> GitHub
+              </a>
+            </Button>
+          </nav>}
+        </div>
       </header>
       {restoring
         ? <main id="main-content" className="resume" role="status">

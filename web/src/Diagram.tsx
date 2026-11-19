@@ -1,17 +1,32 @@
 import { useMemo, useState } from 'react'
 import { Box, Crosshair, GitFork, Minus, Plus, Search } from 'lucide-react'
+import { useReactFlow, useStore } from '@xyflow/react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import type { Edge, Graph, Node } from './api'
+import { ArchitectureFlow, componentConnection, componentNode, workspaceFit } from './ArchitectureFlow'
+import type { Edge, Excerpt, Graph, Node } from './api'
 
-const SIZE = { width: 172, height: 47 }
 type Positioned = { node: Node; x: number; y: number }
 
-function layout(graph: Graph, anchor: string | null, selected: string | null): Positioned[] {
+function componentForExcerpt(graph: Graph, excerpt: Excerpt | null) {
+  const line = excerpt?.lines[0]?.number
+  if (!excerpt || line === undefined) return
+  let preceding: Node | undefined
+  for (const node of graph.nodes) {
+    if (node.path !== excerpt.path || node.start == null || node.start > line) continue
+    if (preceding?.start == null || node.start > preceding.start) preceding = node
+  }
+  if (!preceding) return
+  // When a docstring is the nearest extracted item, focus its owning symbol.
+  return graph.edges.find(edge => edge.relation === 'rationale_for' && edge.source === preceding.id)?.target
+    ?? preceding.id
+}
+
+function layout(graph: Graph, anchor: string | null, selected: string | null, excerpt: Excerpt | null): Positioned[] {
   const nodes = new Map(graph.nodes.map(node => [node.id, node]))
-  const focus = nodes.get(anchor ?? '') ?? graph.nodes[0]
+  const focus = nodes.get(anchor ?? '') ?? nodes.get(componentForExcerpt(graph, excerpt) ?? '') ?? graph.nodes[0]
   if (!focus) return []
   const neighbors = (edges: Edge[], key: 'source' | 'target', other: 'source' | 'target') =>
     [...new Set(edges.filter(edge => edge[key] === focus.id && edge[other] !== focus.id).map(edge => edge[other]))]
@@ -39,25 +54,76 @@ function layout(graph: Graph, anchor: string | null, selected: string | null): P
   ]
 }
 
-export function Diagram({ graph, anchor, selected, selectedEdge, onSelect, onEdge, onAnchor }: {
+function DiagramControls({ center }: { center?: () => void }) {
+  const { fitView, zoomIn, zoomOut } = useReactFlow()
+  const canZoomIn = useStore(store => store.transform[2] < store.maxZoom)
+  const canZoomOut = useStore(store => store.transform[2] > store.minZoom)
+  const centerLabel = center ? 'Center on selection' : 'Fit diagram'
+
+  return <div className="diagram-tools">
+    <Tooltip>
+      <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label={centerLabel}
+        onClick={() => { center?.(); void fitView(workspaceFit) }}>
+        <Crosshair aria-hidden="true"/>
+      </Button></TooltipTrigger>
+      <TooltipContent>{centerLabel}</TooltipContent>
+    </Tooltip>
+    <Separator orientation="vertical"/>
+    <Tooltip>
+      <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Zoom out" disabled={!canZoomOut}
+        onClick={() => void zoomOut()}><Minus aria-hidden="true"/></Button></TooltipTrigger>
+      <TooltipContent>Zoom out</TooltipContent>
+    </Tooltip>
+    <Tooltip>
+      <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Zoom in" disabled={!canZoomIn}
+        onClick={() => void zoomIn()}><Plus aria-hidden="true"/></Button></TooltipTrigger>
+      <TooltipContent>Zoom in</TooltipContent>
+    </Tooltip>
+  </div>
+}
+
+export function Diagram({ graph, anchor, selected, selectedEdge, excerpt, onSelect, onEdge, onAnchor }: {
   graph: Graph
   anchor: string | null
   selected: string | null
   selectedEdge: Edge | null
+  excerpt: Excerpt | null
   onEdge: (edge: Edge) => void
   onSelect: (node: Node) => void
   onAnchor: (id: string) => void
 }) {
-  const [zoom, setZoom] = useState(1)
   const [search, setSearch] = useState('')
   const matches = useMemo(() => {
     const term = search.trim().toLowerCase()
     if (!term) return []
     return graph.nodes.filter(node => [node.label, node.path ?? ''].some(text => text.toLowerCase().includes(term))).slice(0, 12)
   }, [graph.nodes, search])
-  const positioned = useMemo(() => layout(graph, anchor, selected), [graph, anchor, selected])
-  const point = new Map(positioned.map(item => [item.node.id, item]))
-  if (!positioned.length) return <div className="panel-empty"><GitFork size={25}/><p>No structural symbols in this scope. Source files are still available.</p></div>
+  const positioned = useMemo(() => layout(graph, anchor, selected, excerpt), [graph, anchor, selected, excerpt])
+  const connections = useMemo(() => {
+    const visible = new Set(positioned.map(({ node }) => node.id))
+    return graph.edges.filter(edge => edge.source !== edge.target && visible.has(edge.source) && visible.has(edge.target))
+  }, [graph.edges, positioned])
+  const focus = positioned[0]?.node.id
+  if (!focus) return <div className="panel-empty"><GitFork size={25}/><p>No structural symbols in this scope. Source files are still available.</p></div>
+  const confirmed = new Set(graph.claims.filter(claim => claim.snapshotId === graph.snapshotId).map(claim => claim.targetId))
+  const nodes = positioned.map(({ node, x, y }) => componentNode(node.id, { x, y }, {
+    label: node.label,
+    subtitle: node.path?.split('/').at(-1) ?? 'Interview confirmed',
+    active: node.id === (selected ?? focus),
+    confirmed: confirmed.has(node.id),
+    inspect: () => onSelect(node),
+    center: () => onAnchor(node.id),
+  }))
+  const byId = new Map(nodes.map(node => [node.id, node]))
+  const edges = connections.map((edge, index) => componentConnection({
+    id: edge.id ?? edge.source + '-' + edge.target + '-' + index,
+    source: byId.get(edge.source)!,
+    target: byId.get(edge.target)!,
+    label: byId.get(edge.source)!.data.label + ' ' + edge.relation + ' ' + byId.get(edge.target)!.data.label,
+    origin: edge.origin,
+    active: edge === selectedEdge,
+    inspect: () => onEdge(edge),
+  }))
   return <div className="diagram">
     <div className="diagram-search">
       <div className="diagram-search-field"><Search size={15} aria-hidden="true"/><Input aria-label="Find a component" placeholder="Find a component or path…"
@@ -75,63 +141,11 @@ export function Diagram({ graph, anchor, selected, selectedEdge, onSelect, onEdg
       <span>{graph.nodes.length.toLocaleString()} components</span>
     </div>
     <div className="canvas">
-      <svg role="group" aria-label="Directed architecture diagram" viewBox="0 0 700 375">
-        <defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#68796e"/></marker></defs>
-        <g transform={'translate(350 187) scale(' + zoom + ') translate(-350 -187)'}>
-          {graph.edges.map((edge, index) => {
-            const from = point.get(edge.source)
-            const to = point.get(edge.target)
-            if (!from || !to || from === to) return null
-            const rightward = from.x < to.x
-            const x1 = from.x + (rightward ? SIZE.width : 0), x2 = to.x + (rightward ? 0 : SIZE.width)
-            const y1 = from.y + SIZE.height / 2, y2 = to.y + SIZE.height / 2
-            const mid = (x1 + x2) / 2
-            const shape = 'M' + x1 + ' ' + y1 + ' C' + mid + ' ' + y1 + ' ' + mid + ' ' + y2 + ' ' + x2 + ' ' + y2
-            const label = from.node.label + ' ' + edge.relation + ' ' + to.node.label
-            return <g key={edge.id ?? index} className={'edge-control ' + (edge === selectedEdge ? 'active' : '')}
-              role="button" aria-label={label} tabIndex={0} onClick={() => onEdge(edge)}
-              onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onEdge(edge) } }}>
-              <path d={shape} className="edge-hit"/>
-              <path d={shape} className={'edge ' + edge.origin} markerEnd="url(#arrow)"/>
-              <title>{label} · {edge.origin}</title>
-            </g>
-          })}
-          {positioned.map(({ node, x, y }) => {
-            const active = node.id === selected
-            const confirmed = graph.claims.some(claim => claim.targetId === node.id && claim.snapshotId === graph.snapshotId)
-            return <g key={node.id} role="button" aria-label={node.label} aria-pressed={active} tabIndex={0}
-              onClick={() => onSelect(node)}
-              onDoubleClick={() => onAnchor(node.id)}
-              onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(node) } }}
-              className={'graph-node ' + (active ? 'selected' : '')} transform={'translate(' + x + ' ' + y + ')'}>
-              <rect width={SIZE.width} height={SIZE.height} rx={8}/>
-              <circle cx="15" cy="17" r="3" className={confirmed ? 'confirmed' : ''}/>
-              <text x="26" y="21">{node.label.length > 21 ? node.label.slice(0, 20) + '…' : node.label}</text>
-              <text x="26" y="35" className="node-path">{node.path?.split('/').at(-1)?.slice(0, 21) ?? 'Interview confirmed'}</text>
-              <title>{node.label}{node.path ? ' · ' + node.path : ''}</title>
-            </g>
-          })}
-        </g>
-      </svg>
+      <ArchitectureFlow id="review-architecture" label="Directed architecture diagram"
+        nodes={nodes} edges={edges} focus={graph.revision + ':' + focus}>
+        <DiagramControls center={selected ? () => onAnchor(selected) : undefined}/>
+        <div className="diagram-legend"><span><Box size={13} aria-hidden="true"/> Extracted component</span><span><i/> Inferred connection</span></div>
+      </ArchitectureFlow>
     </div>
-    <div className="diagram-tools">
-      <Tooltip>
-        <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Center on selection" disabled={!selected}
-          onClick={() => { if (selected) onAnchor(selected); setZoom(1) }}><Crosshair aria-hidden="true"/></Button></TooltipTrigger>
-        <TooltipContent>Center on selection</TooltipContent>
-      </Tooltip>
-      <Separator orientation="vertical"/>
-      <Tooltip>
-        <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Zoom out" disabled={zoom <= 0.65}
-          onClick={() => setZoom(value => Math.max(0.65, value - 0.15))}><Minus aria-hidden="true"/></Button></TooltipTrigger>
-        <TooltipContent>Zoom out</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Zoom in" disabled={zoom >= 1.45}
-          onClick={() => setZoom(value => Math.min(1.45, value + 0.15))}><Plus aria-hidden="true"/></Button></TooltipTrigger>
-        <TooltipContent>Zoom in</TooltipContent>
-      </Tooltip>
-    </div>
-    <div className="diagram-legend"><span><Box size={13} aria-hidden="true"/> Extracted component</span><span><i/> Inferred connection</span></div>
   </div>
 }
