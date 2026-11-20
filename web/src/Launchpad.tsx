@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, MouseEvent } from 'react'
-import { ArrowRight, BookOpen, ChevronDown, CircleAlert, GitBranch, Github, LoaderCircle } from 'lucide-react'
+import { ArrowRight, BookOpen, ChevronDown, CircleAlert, Github, LoaderCircle, Mic } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { allowVoicePlayback, voiceRtc } from '@/lib/voice-media'
 import { RepositoryExample } from './RepositoryExample'
 import { request, sleep } from './api'
 import type { Mode, Scan, Session } from './api'
 
 const demoRepository = 'https://github.com/healthchecks/healthchecks'
-const modeLabels = { update: 'Create or update code lineage', understand: 'Understand code lineage' }
+const modeLabels = { update: 'Start a voice review', understand: 'Explore reviewed code' }
 const scanLabels = {
   queued: 'Scan queued…',
   scanning: 'Capturing source and extracting structure…',
@@ -41,10 +42,12 @@ export function Launchpad({ onOpen }: { onOpen: (session: Session) => void }) {
     setInvalidUrl(false)
   }
 
-  function begin(nextMode: Mode, event: MouseEvent<HTMLButtonElement>) {
+  function begin(nextMode: Mode, event: MouseEvent<HTMLButtonElement>, demo = false) {
     launcher.current = event.currentTarget
     resetError()
+    if (demo) setUrl(demoRepository)
     setMode(nextMode)
+    void voiceRtc().catch(() => undefined)
   }
 
   function close() {
@@ -65,6 +68,7 @@ export function Launchpad({ onOpen }: { onOpen: (session: Session) => void }) {
       field.current?.focus()
       return
     }
+    allowVoicePlayback()
     const active = new AbortController()
     intake.current = active
     setBusy(true)
@@ -111,15 +115,17 @@ export function Launchpad({ onOpen }: { onOpen: (session: Session) => void }) {
           <div className="hero-field" aria-hidden="true"/>
           <div className="hero-grid" aria-hidden="true"/>
           <div className="hero-content">
-            <h1 id="launch-heading">Trace the decisions <span>behind the code.</span></h1>
-            <p>Map a GitHub repository to its source and record the reasoning behind its architecture.</p>
-            <div className="repo-actions">
-              <Button type="button" size="lg" onClick={event => begin('update', event)}>
-                <GitBranch aria-hidden="true"/> {modeLabels.update}
-              </Button>
-              <Button type="button" variant="outline" size="lg" onClick={event => begin('understand', event)}>
-                {modeLabels.understand} <ArrowRight aria-hidden="true"/>
-              </Button>
+            <h1 id="launch-heading">Code has a backstory. <span>Tell it out loud.</span></h1>
+            <div className="hero-actions">
+              <p>Talk through the decisions behind a GitHub repository. Follow the architecture and pinned source as you answer.</p>
+              <div className="repo-actions">
+                <Button type="button" size="lg" onClick={event => begin('update', event)}>
+                  <Mic aria-hidden="true"/> {modeLabels.update}
+                </Button>
+                <Button type="button" variant="ghost" size="lg" onClick={event => begin('understand', event)}>
+                  {modeLabels.understand} <ArrowRight aria-hidden="true"/>
+                </Button>
+              </div>
             </div>
           </div>
         </section>
@@ -133,11 +139,11 @@ export function Launchpad({ onOpen }: { onOpen: (session: Session) => void }) {
           launcher.current?.focus()
         }}>
           <DialogHeader>
-            <div className="intake-icon">{mode === 'update' ? <GitBranch aria-hidden="true"/> : <BookOpen aria-hidden="true"/>}</div>
+            <div className="intake-icon">{mode === 'update' ? <Mic aria-hidden="true"/> : <BookOpen aria-hidden="true"/>}</div>
             <DialogTitle ref={title} tabIndex={-1}>{modeLabels[mode]}</DialogTitle>
             <DialogDescription>{mode === 'update'
-              ? 'Choose a repository to open a source-backed review.'
-              : 'Open a reviewed repository to explore its architecture and ask questions.'}</DialogDescription>
+              ? 'Choose a repository to start a voice interview grounded in its source.'
+              : 'Open a reviewed repository to explore its architecture and ask questions by voice.'}</DialogDescription>
           </DialogHeader>
           <form className="repo-form" onSubmit={submit} noValidate aria-busy={busy}>
             <div className="repo-form-heading">
@@ -190,7 +196,7 @@ export function Launchpad({ onOpen }: { onOpen: (session: Session) => void }) {
           </form>
         </DialogContent>}
       </Dialog>
-      <RepositoryExample/>
+      <RepositoryExample onOpen={event => begin('update', event, true)}/>
     </main>
   )
 }

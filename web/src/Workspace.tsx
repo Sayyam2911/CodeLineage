@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   ArrowLeft, ArrowRight, ArrowUpRight, AudioLines, Check, ChevronDown, CircleAlert,
-  Code2, FileCode2, GitCommitHorizontal, GitFork, Github, LoaderCircle, PanelRight, Search, Send, SquareTerminal,
+  Code2, FileCode2, GitCommitHorizontal, GitFork, Github, LoaderCircle, PanelRight, Search, Settings2, SquareTerminal,
 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -12,18 +12,16 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Textarea } from '@/components/ui/textarea'
 import { Diagram } from './Diagram'
-import { ClaimEntry, Coverage, EvidenceLinks, PriorReview, ReviewTopics } from './Review'
+import { Coverage, EvidenceLinks, PriorReview, ReviewTopics } from './Review'
 import { SourceExcerpt } from './SourceExcerpt'
-import { Voice } from './Voice'
+import { useInterviewVoice, VoiceControls, VoicePresence } from './Voice'
 import { query, request } from './api'
-import type { Analysis, Context, Edge, Evidence, Excerpt, Graph, Manifest, Node, Review, Revision, Session, SessionEvent, Topic, Turn } from './api'
+import type { Analysis, ChangeOptions, Edge, Evidence, Excerpt, Graph, Manifest, Node, Review, Revision, Session, SessionEvent, Topic, Turn } from './api'
 
-type Operation = 'annotate' | 'add_component' | 'add_connection'
+type Operation = ChangeOptions['operation']
 
-export function Workspace({ initial, onExit }: { initial: Session; onExit: () => void }) {
+export function Workspace({ initial, autoConnect, onExit }: { initial: Session; autoConnect: boolean; onExit: () => void }) {
   const [session, setSession] = useState(initial)
   const [graph, setGraph] = useState<Graph | null>(null)
   const [manifest, setManifest] = useState<Manifest | null>(null)
@@ -45,17 +43,12 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
   const [file, setFile] = useState('')
   const [first, setFirst] = useState(1)
   const [last, setLast] = useState<number | ''>('')
-  const [input, setInput] = useState('')
-  const [voiceAvailable, setVoiceAvailable] = useState<boolean | null>(null)
-  const [textOpen, setTextOpen] = useState(false)
   const [operation, setOperation] = useState<Operation>('annotate')
   const [changeLabel, setChangeLabel] = useState('')
   const [related, setRelated] = useState('')
   const [scopes, setScopes] = useState('')
   const [supersedes, setSupersedes] = useState('')
   const [exceptionTo, setExceptionTo] = useState('')
-  const [result, setResult] = useState<Context | null>(null)
-  const [asked, setAsked] = useState('')
   const [receipt, setReceipt] = useState<Revision | null>(initial.pending || initial.finished ? null : initial.latestReceipt ?? null)
   const appliedRevision = useRef(initial.latestReceipt?.revision ?? 0)
   const [busy, setBusy] = useState('')
@@ -70,7 +63,17 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
   const topic = session.topics[session.index]
   const interview = session.mode === 'update'
   const topicSource = topic?.evidence.find(item => item.kind === 'source')
-  const textVisible = textOpen || voiceAvailable === false
+  const activeQuestion = interview && !session.finished && !receipt ? topic : undefined
+  const voice = useInterviewVoice({
+    sessionId: session.id, token: session.token, enabled: !session.finished && (!interview || !!topic), autoConnect,
+    topicId: activeQuestion?.id, announceTopic: !!activeQuestion && !session.pending,
+  })
+  const working = !!busy || voice.busy
+  const change: ChangeOptions | undefined = activeQuestion ? {
+    operation, scope: scopes.trim() ? scopes.split(',').map(value => value.trim()).filter(Boolean) : null,
+    targetId: selected, relatedId: related || null, label: changeLabel.trim() || null,
+    supersedes: supersedes || null, exceptionTo: exceptionTo || null,
+  } : undefined
 
   useEffect(() => {
     window.scrollTo(0, 0)
@@ -264,34 +267,6 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
     }
   }
 
-  async function send(event: FormEvent) {
-    event.preventDefault()
-    const text = input.trim()
-    if (!text) return
-    if (interview) {
-      const change = {
-        text, operation, scope: scopes.trim() ? scopes.split(',').map(value => value.trim()).filter(Boolean) : null,
-        targetId: selected, relatedId: related || null, label: changeLabel.trim() || null,
-        supersedes: supersedes || null, exceptionTo: exceptionTo || null,
-      }
-      await mutate<Session>('/answer', change, 'Preparing read-back…', async staged => {
-        const reviewed = staged.pending
-          ? await request<Session>(path + '/readback', { proposalId: staged.pending.id }, session.token)
-          : staged
-        setSession(previous => previous.seq > reviewed.seq ? previous : { ...reviewed, token: session.token })
-        setInput('')
-        if (!reviewed.pending) focusTopic(reviewed.topics[reviewed.index])
-      })
-    } else {
-      await mutate<Context>('/context', { text }, 'Finding evidence…', async reply => {
-        setAsked(text); setInput(''); setResult(reply)
-        if (reply.focus) { setAnchor(reply.focus.id); setSelected(reply.focus.id) }
-        const ref = reply.evidence.find(item => item.kind === 'source')
-        if (ref) void showEvidence(ref)
-      })
-    }
-  }
-
   function selectNode(node: Node) {
     setSelected(node.id); setActiveEdge(null)
     if (node.path && node.start) {
@@ -375,6 +350,65 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                     void showEvidence(ref)
                     setDetailsOpen(false)
                   }}/>}
+                {activeQuestion && <Collapsible className="rail-group">
+                  <CollapsibleTrigger asChild><Button type="button" variant="ghost" className="rail-trigger">
+                    <Settings2 aria-hidden="true"/> Scope or structural change <ChevronDown aria-hidden="true" className="rail-chevron"/>
+                  </Button></CollapsibleTrigger>
+                  <CollapsibleContent className="review-options">
+                    <div>
+                      <Label htmlFor="change-type">Change type</Label>
+                      <select id="change-type" value={operation} onChange={event => setOperation(event.target.value as Operation)}>
+                        <option value="annotate">Annotate component</option>
+                        <option value="add_component">Add component</option>
+                        <option value="add_connection">Add connection</option>
+                      </select>
+                    </div>
+                    <div><Label htmlFor="change-scope">Scope files or directories</Label>
+                      <Input id="change-scope" name="scope" value={scopes} placeholder={activeQuestion.scope} spellCheck={false}
+                        onChange={event => setScopes(event.target.value)}/>
+                    </div>
+                    {operation !== 'annotate' && (
+                      <div><Label htmlFor="change-label">{operation === 'add_component' ? 'Component name' : 'Connection type'}</Label>
+                        <Input id="change-label" name="change-label" value={changeLabel} onChange={event => setChangeLabel(event.target.value)}/>
+                      </div>
+                    )}
+                    {operation === 'add_connection' && (
+                      <div><Label htmlFor="related-component">Connect selected component to</Label>
+                        <select id="related-component" value={related} onChange={event => setRelated(event.target.value)}>
+                          <option value="">Choose a component</option>
+                          {graph?.nodes.filter(node => node.id !== selected).map(node => <option key={node.id} value={node.id}>
+                            {node.label}{node.path ? ' · ' + node.path : ''}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    {!!graph?.claims.length && <>
+                      <div><Label htmlFor="supersedes">Supersede a claim</Label>
+                        <select id="supersedes" value={supersedes} onChange={event => setSupersedes(event.target.value)}>
+                          <option value="">Keep existing claims</option>
+                          {graph.claims.map(claim => <option key={claim.claimId} value={claim.claimId}>{claim.title}</option>)}
+                        </select>
+                      </div>
+                      <div><Label htmlFor="exception">Exception to</Label>
+                        <select id="exception" value={exceptionTo} onChange={event => setExceptionTo(event.target.value)}>
+                          <option value="">No exception</option>
+                          {graph.claims.map(claim => <option key={claim.claimId} value={claim.claimId}>{claim.title}</option>)}
+                        </select>
+                      </div>
+                    </>}
+                  </CollapsibleContent>
+                </Collapsible>}
+                {turns.length > 0 && <Collapsible className="rail-group">
+                  <CollapsibleTrigger asChild><Button type="button" variant="ghost" className="rail-trigger">
+                    <FileCode2 aria-hidden="true"/> Interview transcript <ChevronDown aria-hidden="true" className="rail-chevron"/>
+                  </Button></CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <ol className="transcript">
+                      {turns.map(turn => <li key={turn.id}>
+                        <strong>{turn.speaker === 'assistant' ? 'Interviewer' : session.speaker}</strong><p>{turn.text}</p>
+                      </li>)}
+                    </ol>
+                  </CollapsibleContent>
+                </Collapsible>}
               </div>
             </SheetContent>
           </Sheet>
@@ -388,6 +422,7 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
 
       <div className="workbench">
         <div className="workbench-content">
+          <VoicePresence voice={voice} interview={interview}/>
           <div className="panels">
             <section className="editor-panel" aria-labelledby="architecture-title">
               <header className="panel-heading">
@@ -487,174 +522,71 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
             </section>
           </div>
 
-          <section className="editor-panel conversation" aria-labelledby="conversation-title">
-            <Tabs defaultValue="conversation">
-              <header className="panel-heading conversation-heading">
-                <AudioLines aria-hidden="true" size={17}/>
-                <h2 id="conversation-title">{interview ? 'Interview' : 'Ask the lineage'}</h2>
-                {interview && topic && !session.finished && <Badge variant="outline">
-                  Topic {session.index + 1} of {session.topics.length}
-                </Badge>}
-                {turns.length > 0 && <TabsList aria-label="Conversation view" className="conversation-tabs">
-                  <TabsTrigger value="conversation">Conversation</TabsTrigger>
-                  <TabsTrigger value="transcript">Transcript</TabsTrigger>
-                </TabsList>}
-              </header>
-              <div className="voice-strip">
-                <Voice sessionId={session.id} token={session.token} disabled={session.finished}
-                  available={voiceAvailable} setAvailable={setVoiceAvailable}/>
-                {!session.finished && (!interview || (topic && !receipt)) && voiceAvailable !== false &&
-                  <Button type="button" variant="ghost" size="sm" aria-expanded={textVisible} aria-controls="text-conversation"
-                    onClick={() => setTextOpen(open => !open)}>
-                    {textOpen ? 'Hide text' : 'Type instead'}
-                  </Button>}
-              </div>
-              <TabsContent value="conversation" className="conversation-body">
-                {error && <Alert variant="destructive" className="inline-notice">
-                  <CircleAlert aria-hidden="true"/><AlertDescription>{error}</AlertDescription>
-                </Alert>}
+          <section className="editor-panel interview-console" aria-labelledby="interview-title">
+            <header className="panel-heading">
+              <h2 id="interview-title">{interview ? 'Architecture interview' : 'Ask the lineage'}</h2>
+              {activeQuestion && <Badge variant="outline">Question {session.index + 1} of {session.topics.length}</Badge>}
+            </header>
+            <div className="interview-body">
+              {error && <Alert variant="destructive" className="inline-notice">
+                <CircleAlert aria-hidden="true"/><AlertDescription>{error}</AlertDescription>
+              </Alert>}
 
-                {interview && receipt && (
-                  <div className="claim-receipt">
-                    <Alert className="inline-notice receipt" role="status">
-                      <Check aria-hidden="true"/>
-                      <AlertDescription>Saved revision {receipt.revision} · {receipt.claim.statement}</AlertDescription>
-                    </Alert>
-                    <div className="receipt-actions">
-                      <EvidenceLinks items={receipt.claim.evidence} onOpen={ref => void showEvidence(ref)}/>
-                      {topic && !session.finished && <Button type="button" size="sm" variant="secondary"
-                        onClick={() => { setReceipt(null); focusTopic(topic) }}>Next topic <ArrowRight aria-hidden="true"/></Button>}
-                    </div>
+              {interview && receipt && (
+                <div className="claim-receipt">
+                  <Alert className="inline-notice receipt" role="status">
+                    <Check aria-hidden="true"/>
+                    <AlertDescription>Saved revision {receipt.revision} · {receipt.claim.statement}</AlertDescription>
+                  </Alert>
+                  <div className="receipt-actions">
+                    <EvidenceLinks items={receipt.claim.evidence} onOpen={ref => void showEvidence(ref)}/>
+                    {topic && !session.finished && <Button type="button" size="sm" variant="secondary" disabled={working}
+                      onClick={() => { setReceipt(null); focusTopic(topic) }}>Next question <ArrowRight aria-hidden="true"/></Button>}
                   </div>
-                )}
-                {interview && !session.finished && topic && !receipt && <article className="topic">
-                  <h3>{topic.question}</h3><p>{topic.statement}</p>
-                  <EvidenceLinks items={topic.evidence} onOpen={ref => showTopicEvidence(topic, ref, false)}/>
-                </article>}
-                {interview && !session.finished && !topic && <p className="subtle">There are no remaining interview topics for this scan.</p>}
-                {session.pending && (
-                  <div className="readback">
-                    <strong>Confirm the read-back</strong>
-                    <p>{session.pending.summary}</p>
-                    <div className="controls">
-                      {!session.pending.readbackTurnId && <Button type="button" size="sm" variant="secondary" disabled={!!busy}
-                        onClick={() => void mutate('/readback', { proposalId: session.pending?.id }, 'Acknowledging read-back…')}>
-                        I reviewed this summary</Button>}
-                      <Button type="button" size="sm" disabled={!!busy || !session.pending.readbackTurnId}
-                        onClick={() => void mutate<Revision>('/confirm', {
-                          proposalId: session.pending?.id, readbackTurnId: session.pending?.readbackTurnId,
-                        }, 'Confirming…', applied)}><Check aria-hidden="true"/> Confirm and save</Button>
-                      <Button type="button" variant="ghost" size="sm" disabled={!!busy}
-                        onClick={() => void mutate('/interrupt', { proposalId: session.pending?.id }, 'Withdrawing read-back…')}>
-                        Interrupt read-back</Button>
-                    </div>
+                </div>
+              )}
+              {activeQuestion && <article className="interview-question">
+                <h3>{activeQuestion.question}</h3>
+                <p>{activeQuestion.statement}</p>
+                <EvidenceLinks items={activeQuestion.evidence} onOpen={ref => showTopicEvidence(activeQuestion, ref, false)}/>
+              </article>}
+              {interview && !session.finished && !topic && <p className="subtle">You’ve reached the end of the interview.</p>}
+              {session.pending && (
+                <div className="readback">
+                  <strong>Confirm the read-back</strong>
+                  <p>{session.pending.summary}</p>
+                  <div className="controls">
+                    {!session.pending.readbackTurnId && <Button type="button" size="sm" variant="secondary" disabled={working}
+                      onClick={() => void mutate('/readback', { proposalId: session.pending?.id }, 'Acknowledging read-back…')}>
+                      I reviewed this summary</Button>}
+                    <Button type="button" size="sm" disabled={working || !session.pending.readbackTurnId}
+                      onClick={() => void mutate<Revision>('/confirm', {
+                        proposalId: session.pending?.id, readbackTurnId: session.pending?.readbackTurnId,
+                      }, 'Confirming…', applied)}><Check aria-hidden="true"/> Confirm and save</Button>
+                    <Button type="button" variant="ghost" size="sm" disabled={working}
+                      onClick={() => void mutate('/interrupt', { proposalId: session.pending?.id }, 'Withdrawing read-back…')}>
+                      Interrupt read-back</Button>
                   </div>
-                )}
+                </div>
+              )}
 
-                {!interview && result && <div className="context-result">
-                  <h3>{asked}</h3>
-                  {result.answer && <p>{result.answer}</p>}
-                  {result.claims.map(claim => <ClaimEntry key={claim.claimId} claim={claim} onOpen={ref => void showEvidence(ref)}/>)}
-                  {result.findings.map(finding => <article className="context-entry" key={finding.id}>
-                    <strong>{finding.statement}</strong>
-                    <p>{finding.origin === 'inference' ? 'Model inference' : 'Code evidence'}</p>
-                    <EvidenceLinks items={finding.evidence} onOpen={ref => void showEvidence(ref)}/>
-                  </article>)}
-                  {result.hops.length > 0 && <p>Supported path · {result.hops[0].fromLabel} → {result.hops.map(hop => hop.toLabel).join(' → ')}</p>}
-                  {result.documents.map(doc => <Button asChild variant="link" size="sm" key={doc.path}>
-                    <a href={doc.url} target="_blank" rel="noreferrer">{doc.path}<ArrowUpRight aria-hidden="true"/></a>
-                  </Button>)}
-                  {result.unknown && <p className="subtle">The reviewed lineage has no confirmed rationale for that question.</p>}
-                </div>}
-
-                {interview && !session.finished && topic && !receipt && (
-                  <Collapsible className="change-options">
-                    <CollapsibleTrigger asChild>
-                      <Button type="button" variant="ghost" size="sm"><ChevronDown aria-hidden="true"/> Scope or structural change</Button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="review-options">
-                      <div>
-                        <Label htmlFor="change-type">Change type</Label>
-                        <select id="change-type" value={operation} onChange={event => setOperation(event.target.value as Operation)}>
-                          <option value="annotate">Annotate component</option>
-                          <option value="add_component">Add component</option>
-                          <option value="add_connection">Add connection</option>
-                        </select>
-                      </div>
-                      <div><Label htmlFor="change-scope">Scope files or directories</Label>
-                        <Input id="change-scope" name="scope" value={scopes} placeholder={topic.scope} spellCheck={false}
-                          onChange={event => setScopes(event.target.value)}/>
-                      </div>
-                      {operation !== 'annotate' && (
-                        <div><Label htmlFor="change-label">{operation === 'add_component' ? 'Component name' : 'Connection type'}</Label>
-                          <Input id="change-label" name="change-label" value={changeLabel} onChange={event => setChangeLabel(event.target.value)}/>
-                        </div>
-                      )}
-                      {operation === 'add_connection' && (
-                        <div><Label htmlFor="related-component">Connect selected component to</Label>
-                          <select id="related-component" value={related} onChange={event => setRelated(event.target.value)}>
-                            <option value="">Choose a component</option>
-                            {graph?.nodes.filter(node => node.id !== selected).map(node => <option key={node.id} value={node.id}>
-                              {node.label}{node.path ? ' · ' + node.path : ''}</option>)}
-                          </select>
-                        </div>
-                      )}
-                      {!!graph?.claims.length && <>
-                        <div><Label htmlFor="supersedes">Supersede a claim</Label>
-                          <select id="supersedes" value={supersedes} onChange={event => setSupersedes(event.target.value)}>
-                            <option value="">Keep existing claims</option>
-                            {graph.claims.map(claim => <option key={claim.claimId} value={claim.claimId}>{claim.title}</option>)}
-                          </select>
-                        </div>
-                        <div><Label htmlFor="exception">Exception to</Label>
-                          <select id="exception" value={exceptionTo} onChange={event => setExceptionTo(event.target.value)}>
-                            <option value="">No exception</option>
-                            {graph.claims.map(claim => <option key={claim.claimId} value={claim.claimId}>{claim.title}</option>)}
-                          </select>
-                        </div>
-                      </>}
-                    </CollapsibleContent>
-                  </Collapsible>
-                )}
-
-                {textVisible && !session.finished && (!interview || (topic && !receipt)) && (
-                  <form id="text-conversation" className="composer" onSubmit={send} aria-busy={!!busy}>
-                    <Label htmlFor="conversation-entry" className="sr-only">{interview ? 'Interview answer' : 'Question'}</Label>
-                    <Textarea id="conversation-entry" name="message" rows={2} value={input}
-                      placeholder={interview ? session.pending ? 'Type a correction…' : 'Type your answer…' : 'Ask how this code works…'}
-                      onChange={event => { setInput(event.target.value); setTextOpen(true) }}
-                      onKeyDown={event => {
-                        if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                          event.preventDefault()
-                          if (!busy && input.trim()) event.currentTarget.form?.requestSubmit()
-                        }
-                      }}/>
-                    <Button type="submit" variant="default" size="icon" title="Send" aria-label="Send" disabled={!!busy || !input.trim()}>
-                      {busy ? <LoaderCircle className="animate-spin" aria-hidden="true"/> : <Send aria-hidden="true"/>}
-                    </Button>
-                  </form>
-                )}
-
-                {interview && !session.finished && <div className="controls bottom-controls">
-                  {topic && !receipt && <Button type="button" variant="ghost" size="sm" disabled={!!busy} onClick={() => void mutate<Session>(
-                    '/skip', {}, 'Skipping…', async next => {
+              {!session.finished && <div className="interview-actions">
+                {(!interview || activeQuestion) && <VoiceControls voice={voice} interview={interview}
+                  question={!!activeQuestion && !session.pending} correction={!!session.pending} change={change} busy={!!busy}/>}
+                {interview && <div className="controls bottom-controls">
+                  {activeQuestion && !session.pending && <Button type="button" variant="ghost" size="sm" disabled={working}
+                    onClick={() => void mutate<Session>('/skip', {}, 'Skipping…', async next => {
                       setSession(previous => previous.seq > next.seq ? previous : { ...next, token: initial.token })
                       focusTopic(next.topics[next.index])
                     })}>Skip question</Button>}
-                  <Button type="button" size="sm" variant="outline" disabled={!!busy} onClick={() => void mutate('/finish', {}, 'Finishing…')}>Finish review</Button>
+                  <Button type="button" size="sm" variant="outline" disabled={working || !!session.pending}
+                    onClick={() => void mutate('/finish', {}, 'Finishing…')}>Finish review</Button>
                 </div>}
-                {session.finished && <Alert className="inline-notice receipt" role="status">
-                  <Check aria-hidden="true"/><AlertDescription>Review finished.</AlertDescription>
-                </Alert>}
-              </TabsContent>
-              {turns.length > 0 && <TabsContent value="transcript" className="transcript-panel">
-                <ol className="transcript">
-                  {turns.map(turn => <li key={turn.id}>
-                    <strong>{turn.speaker === 'assistant' ? 'Assistant' : session.speaker}</strong><p>{turn.text}</p>
-                  </li>)}
-                </ol>
-              </TabsContent>}
-            </Tabs>
+              </div>}
+              {session.finished && <Alert className="inline-notice receipt" role="status">
+                <Check aria-hidden="true"/><AlertDescription>Review finished.</AlertDescription>
+              </Alert>}
+            </div>
           </section>
         </div>
       </div>

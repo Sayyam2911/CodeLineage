@@ -15,6 +15,7 @@ type SessionKey = Pick<Session, 'id' | 'token'>
 
 export default function CodeLineageApp() {
   const [session, setSession] = useState<Session | null>(null)
+  const [autoConnect, setAutoConnect] = useState(false)
   const [resumeError, setResumeError] = useState('')
   const [restoring, setRestoring] = useState(false)
 
@@ -45,6 +46,7 @@ export default function CodeLineageApp() {
   function exit() {
     sessionStorage.removeItem(storageKey)
     setSession(null)
+    setAutoConnect(false)
     setRestoring(false)
     setResumeError('')
     if (window.location.hash) window.history.replaceState(null, '', window.location.pathname + window.location.search)
@@ -54,7 +56,7 @@ export default function CodeLineageApp() {
   return (
     <TooltipProvider delayDuration={200}>
       <a href="#main-content" className="skip-link">Skip to content</a>
-      <header className={session ? 'topbar workspace-topbar' : 'topbar'}>
+      <header className="topbar">
         <div className="topbar-content">
           <Button type="button" variant="ghost" className="brand" onClick={exit} aria-label="CodeLineage home">
             <Workflow aria-hidden="true" className="brand-mark"/>
@@ -85,9 +87,10 @@ export default function CodeLineageApp() {
               </div>
             </main>
           : session
-            ? <Workspace key={session.id} initial={session} onExit={exit}/>
+            ? <Workspace key={session.id} initial={session} autoConnect={autoConnect} onExit={exit}/>
             : <Launchpad onOpen={next => {
                 sessionStorage.setItem(storageKey, JSON.stringify({ id: next.id, token: next.token } satisfies SessionKey))
+                setAutoConnect(true)
                 setSession(next)
               }}/>}
     </TooltipProvider>

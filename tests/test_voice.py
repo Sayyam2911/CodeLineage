@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -20,8 +21,8 @@ def test_agora_sdk_config_limits_tools_by_mode(monkeypatch):
         monkeypatch.setenv(name, value)
     voice = AgoraVoice()
     assert voice.available()
-    rtc = voice.rtc({"uid": 1234, "channel": "test-channel", "id": "test-connection"})
-    assert rtc["token"].startswith("007") and rtc["channel"] == "test-channel"
+    rtc = voice.rtc({"uid": 1234, "agentUid": 5678, "channel": "test-channel", "id": "test-connection"})
+    assert rtc["token"].startswith("007") and rtc["channel"] == "test-channel" and rtc["agentUid"] == 5678
     for mode, expected in [
         ("update", {"getDecisionContext", "showEvidence", "proposeChange", "confirmChange"}),
         ("understand", {"getDecisionContext", "showEvidence"}),
@@ -43,13 +44,15 @@ def test_published_pipeline_inherits_providers_and_uses_agent_auth(monkeypatch):
     monkeypatch.delenv("MURF_VOICE_ID", raising=False)
     voice = AgoraVoice()
     assert voice.available()
-    connection = {"id": "connection", "channel": "speech-room", "uid": 100001, "agentUid": 900001}
+    connection = {"id": "connection", "channel": "speech-room", "uid": 100001, "agentUid": 900001,
+                  "guided": True}
 
     def start(app_id, *, name, pipeline_id, properties, request_options):
         assert app_id == "1" * 32 and name == connection["channel"]
         assert pipeline_id == "published-pipeline"
         assert "asr" not in properties and "tts" not in properties
         assert properties["agent_rtc_uid"] == "900001" and properties["remote_rtc_uids"] == ["100001"]
+        assert properties["idle_timeout"] == 300
         assert request_options["additional_headers"]["Authorization"] == "agora token=" + properties["token"]
         tools = properties["llm"]["tools"]
         assert {item["function"]["name"] for item in tools} == {"getDecisionContext", "showEvidence"}
@@ -71,7 +74,8 @@ def test_published_pipeline_inherits_providers_and_uses_agent_auth(monkeypatch):
     voice.stop(connection)
 
 
-def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path, monkeypatch):
+@pytest.fixture
+def voice_app(tmp_path):
     snapshots = Snapshots(tmp_path / "snapshots")
     database = Database(tmp_path / "lineage.db")
     fixture(snapshots, "a" * 64)
@@ -81,6 +85,7 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path, mon
         token = None
         spoken = []
         tool_name = "getDecisionContext"
+        participant = ("We retry webhook errors once.", "provider-turn")
 
         @staticmethod
         def available():
@@ -97,7 +102,7 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path, mon
         @staticmethod
         def last_participant(connection):
             assert connection["agentId"] == "provider-agent"
-            return "We retry webhook errors once.", "provider-turn"
+            return FakeGateway.participant
 
         @staticmethod
         def history(connection):
@@ -120,6 +125,11 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path, mon
     app = FastAPI()
     app.include_router(interview_routes(service))
     app.include_router(voice_routes(service, FakeGateway))
+    return app, FakeGateway
+
+
+def test_voice_tools_are_session_bound_and_use_verified_transcript(voice_app, monkeypatch):
+    app, gateway = voice_app
     with TestClient(app) as client:
         session = client.post("/sessions", json={
             "mode": "update", "url": "https://github.com/example/project", "snapshotId": "a" * 64,
@@ -129,21 +139,21 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path, mon
         connection = client.post(voice + "/reserve", headers=browser).json()
         assert client.post(voice + "/start", headers=browser, json=connection).status_code == 200
         tools = "/voice/tools/" + session["id"]
-        agent = {"Authorization": "Bearer " + FakeGateway.token}
+        agent = {"Authorization": "Bearer " + gateway.token}
         for _ in range(2):
             assert client.post(tools + "/getDecisionContext", headers=agent, json={}).status_code == 200
-        assert len(FakeGateway.spoken) == 1
-        FakeGateway.tool_name = "showEvidence"
+        assert len(gateway.spoken) == 1
+        gateway.tool_name = "showEvidence"
         assert client.post(tools + "/showEvidence", headers=agent, json={
             "path": "module_0.py", "start": "1", "end": "1",
         }).status_code == 200
-        assert len(FakeGateway.spoken) == 2 and "module_0.py" in FakeGateway.spoken[-1]
-        FakeGateway.tool_name = "silent follow-up"
+        assert len(gateway.spoken) == 2 and "module_0.py" in gateway.spoken[-1]
+        gateway.tool_name = "silent follow-up"
         monkeypatch.setattr("codelineage.voice.VOICE_REPLY_TIMEOUT", 0)
         assert client.post(voice + "/watch", headers=agent, json=connection).status_code == 401
         for _ in range(3):
             assert client.post(voice + "/watch", headers=browser, json=connection).json()["active"]
-        assert len(FakeGateway.spoken) == 3
+        assert len(gateway.spoken) == 3
         assert client.post(tools + "/proposeChange", headers=browser, json={"summary": "Fake."}).status_code == 401
         result = client.post(tools + "/proposeChange", headers=agent, json={"summary": "Webhook retries are limited to one."})
         assert result.status_code == 200, result.text
@@ -163,3 +173,42 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path, mon
         assert client.post(tools + "/confirmChange", headers=agent, json=payload).json()["status"] == "saved"
         assert client.post(voice + "/stop", headers=browser, json=connection).status_code == 200
         assert client.post(tools + "/getDecisionContext", headers=agent, json={}).status_code == 401
+
+
+def test_guided_voice_replays_active_question_and_requires_a_new_recorded_answer(voice_app):
+    app, gateway = voice_app
+    with TestClient(app) as client:
+        session = client.post("/sessions", json={
+            "mode": "update", "url": "https://github.com/example/project", "snapshotId": "a" * 64,
+        }).json()
+        browser = {"Authorization": "Bearer " + session["token"]}
+        voice = "/voice/sessions/" + session["id"]
+        topic = session["topics"][session["index"]]
+        connection = client.post(voice + "/reserve", headers=browser).json()
+        started = client.post(voice + "/start", headers=browser, json=connection | {"guided": True})
+        assert started.status_code == 200
+        agent = {"Authorization": "Bearer " + gateway.token}
+        proposal = "/voice/tools/" + session["id"] + "/proposeChange"
+        question = connection | {"topicId": topic["id"]}
+        assert client.post(voice + "/prompt", headers=agent, json=question).status_code == 401
+        assert client.post(voice + "/prompt", headers=browser, json=question | {"topicId": "stale"}).status_code == 409
+        assert client.post(voice + "/prompt", headers=browser, json=question).json() == {"spoken": True}
+        assert client.post(voice + "/prompt", headers=browser, json=question).json() == {"spoken": False}
+        assert client.post(voice + "/prompt", headers=browser, json=question | {"repeat": True}).json() == {"spoken": True}
+        assert len(gateway.spoken) == 2
+        assert all(prompt.startswith(topic["question"]) and "Press the microphone" in prompt for prompt in gateway.spoken)
+
+        change = {"summary": "Keep duplicate deliveries out of the queue."}
+        assert client.post(proposal, headers=agent, json=change).status_code == 409
+        capture = question | {"phase": "recording", "change": {"scope": ["module_0.py"]}}
+        assert client.post(voice + "/capture", headers=agent, json=capture).status_code == 401
+        assert client.post(voice + "/capture", headers=browser, json=capture).json() == {"recording": True}
+        assert client.post(proposal, headers=agent, json=change).status_code == 409
+        assert client.post(voice + "/capture", headers=browser, json=question | {"phase": "submitted"}).json() == {"recording": False}
+        assert client.post(proposal, headers=agent, json=change).status_code == 409
+
+        gateway.participant = ("We keep duplicate deliveries out of the queue.", "new-turn")
+        staged = client.post(proposal, headers=agent, json=change)
+        assert staged.status_code == 200, staged.text
+        assert "Scope: module_0.py" in staged.json()["summary"]
+        assert client.post(voice + "/prompt", headers=browser, json=question | {"repeat": True}).status_code == 409

@@ -27,8 +27,7 @@ class OpenSession(BaseModel):
     speaker: str = Field(default="Interview participant", min_length=1, max_length=100)
 
 
-class Answer(BaseModel):
-    text: str = Field(min_length=1, max_length=4000)
+class ChangeOptions(BaseModel):
     scope: list[str] | None = Field(default=None, max_length=12)
     operation: Operation = "annotate"
     targetId: str | None = Field(default=None, max_length=300)
@@ -36,6 +35,10 @@ class Answer(BaseModel):
     label: str | None = Field(default=None, max_length=160)
     supersedes: str | None = Field(default=None, max_length=80)
     exceptionTo: str | None = Field(default=None, max_length=80)
+
+
+class Answer(ChangeOptions):
+    text: str = Field(min_length=1, max_length=4000)
 
 
 class ProposalAction(BaseModel):
@@ -142,11 +145,13 @@ class Interviews:
             event(records, session, f"proposal.{status}", proposalId=pending["id"])
 
     def stage(self, session_id: str, auth: str, request: Answer, *, voice_answer: str | None = None,
-              voice_turn: str | None = None) -> dict:
+              voice_turn: str | None = None, expected_topic: str | None = None) -> dict:
         with self.database.transaction() as records:
             session = self.authorize(records, session_id, auth, voice=voice_answer is not None)
             self.writable(session)
             topic = self.active_topic(session)
+            if expected_topic and topic["id"] != expected_topic:
+                raise HTTPException(409, "The interview moved to another question. Record your answer to the current question.")
         answer = request.text.strip()
         if not answer:
             raise HTTPException(422, "Enter a reason or skip the question.")

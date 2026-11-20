@@ -23,6 +23,16 @@ export type Topic = {
   evidence: Evidence[]
 }
 
+export type ChangeOptions = {
+  operation: 'annotate' | 'add_component' | 'add_connection'
+  scope: string[] | null
+  targetId: string | null
+  relatedId: string | null
+  label: string | null
+  supersedes: string | null
+  exceptionTo: string | null
+}
+
 export type Claim = {
   claimId: string
   title: string
@@ -128,16 +138,6 @@ export type Scan = {
   error?: string
   snapshotId?: string
   reused?: boolean
-}
-export type Context = {
-  focus: Node | null
-  claims: Claim[]
-  findings: Topic[]
-  hops: (Edge & { fromLabel: string; toLabel: string })[]
-  evidence: Evidence[]
-  documents: { path: string; url: string }[]
-  answer?: string
-  unknown: boolean
 }
 export type Revision = { revision: number; claim: Claim }
 export type SessionEvent = { seq: number; revision: number; type: string; receipt?: Revision; evidence?: Evidence; turn?: Turn }

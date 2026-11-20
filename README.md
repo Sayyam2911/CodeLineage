@@ -18,7 +18,7 @@ uv run --locked uvicorn codelineage.main:app --host 127.0.0.1 --port 8000
 
 Open `http://localhost:8000` in a browser. FastAPI serves the static export from the Next.js App Router. For development with live reload, keep the backend running and start `npm --prefix web run dev` in a second terminal. Open `http://localhost:3000`. The Next.js development server forwards API requests and the event stream to FastAPI. Set `CODELINEAGE_API_ORIGIN` for a different backend origin or `CODELINEAGE_DATA` for a different database and snapshot directory.
 
-Choose **Create or update code lineage**, then **Use the Healthchecks demo** and **Open review**. With the ref left empty, the demo resolves to Healthchecks v5.0.3. The first question focuses alert delivery and shows the pinned ordering code. Type a reason, inspect the proposed summary, interrupt or correct it, and approve it explicitly. In a fresh **Understand code lineage** session, ask why new webhook channels wait. The answer separates the participant's rationale from the source excerpt. A line can still be opened for a file Graphify could not parse.
+With voice configured, choose **Start a voice review**, then **Use the Healthchecks demo** and **Open review**. With the ref left empty, the demo resolves to Healthchecks v5.0.3. The interviewer reads the first question, shows the pinned alert ordering code, and pauses. Select **Answer question** and allow microphone access, then select **Finish answer** when you’re done. Review the proposed summary on screen, record a correction if needed, or select **Confirm and save**. **Next question** opens and reads the next prompt. Choose **Explore reviewed code** to ask why new webhook channels wait, or ask to see the corresponding source.
 
 ~~~sh
 uv run --locked pytest
@@ -48,9 +48,9 @@ In Agora AI Studio, publish an agent with Murf Falcon selected as text-to-speech
 | `MURF_MODEL`, `DEEPGRAM_API_KEY` | Optional direct provider settings. The Murf model defaults to `FALCON`. |
 | `CODELINEAGE_VOICE_MODEL`, `CODELINEAGE_VOICE_MODEL_KEY` | Optional direct OpenAI voice-turn settings. The default is Agora-managed `gpt-4o-mini`. |
 
-The browser publishes microphone audio to Agora. The server issues expiring RTC tokens and separate, session-bound tool credentials. Agora can open evidence and propose an interview change using a participant utterance from the provider history. The browser displays the exact summary for explicit approval. Spoken approval remains pending verification of provider delivery and assent. The voice agent checks the stored receipt before saying an edit was saved. Use the typed flow if voice is unavailable.
+The browser opens the microphone when the participant chooses to speak and releases it when the participant finishes or the interviewer replies. The server issues expiring RTC tokens and separate, session-bound tool credentials. Agora can open source evidence and propose an interview change using the participant's live answer. The browser displays the exact summary for explicit approval and the agent checks the saved receipt.
 
-In a review or lineage session, select **Start voice** and allow microphone access. Ask why Healthchecks orders delivery and follow up by asking to see the source. Select **End voice** when you finish. [Agora Studio connection guide](https://docs.agora.io/en/ai/studio/deploy/connect-agent) · [Agora Python quickstart](https://github.com/AgoraIO-Conversational-AI/agent-quickstart-python/tree/bd1af724bed885c39a5a57235b37ec3bb3fd6396)
+Use **Play question** to resume audio after a reload and **Repeat question** to hear the current prompt again. Select **End audio** to disconnect. [Agora Studio connection guide](https://docs.agora.io/en/ai/studio/deploy/connect-agent) · [Agora Python quickstart](https://github.com/AgoraIO-Conversational-AI/agent-quickstart-python/tree/bd1af724bed885c39a5a57235b37ec3bb3fd6396)
 
 ## Managed deployment
 

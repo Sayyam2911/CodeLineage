@@ -29,9 +29,9 @@ const ports = positions.flatMap(position => handleTypes.map(type => ({ id: type 
 const minimumZoom = 0.32
 const maximumZoom = 1.85
 
-export function componentNode(id: string, position: XYPosition, data: ComponentData, compact = false): ArchitectureNode {
-  const width = compact ? 152 : data.role ? 190 : 172
-  const height = compact ? 41 : data.role ? 59 : 49
+export function componentNode(id: string, position: XYPosition, data: ComponentData): ArchitectureNode {
+  const width = data.role ? 190 : 172
+  const height = data.role ? 59 : 49
   const handles = ports.map(port => ({
     ...port, width: 2, height: 2,
     x: port.position === Position.Left ? 0 : port.position === Position.Right ? width - 2 : width / 2 - 1,
@@ -99,7 +99,6 @@ function Component({ data }: NodeProps<ArchitectureNode>) {
 }
 
 const nodeTypes = { component: Component }
-const exampleFit: FitViewOptions = { padding: { x: '16px', y: '21px' }, maxZoom: 1.03 }
 export const workspaceFit: FitViewOptions = { padding: { x: '22px', y: '30px' }, maxZoom: 1.2 }
 
 function FitVisibleGraph({ focus, options }: { focus?: string; options: FitViewOptions }) {
@@ -115,31 +114,28 @@ function FitVisibleGraph({ focus, options }: { focus?: string; options: FitViewO
   return null
 }
 
-export function ArchitectureFlow({ id, label, nodes, edges, focus, compact = false, children }: {
+export function ArchitectureFlow({ id, label, nodes, edges, focus, children }: {
   id: string
   label: string
   nodes: ArchitectureNode[]
   edges: ArchitectureEdge[]
   focus?: string
-  compact?: boolean
   children?: ReactNode
 }) {
-  const fitOptions = compact ? exampleFit : workspaceFit
   return (
     <ReactFlow<ArchitectureNode, ArchitectureEdge>
       id={id} aria-label={label} className="architecture-flow"
       nodes={nodes} edges={edges} nodeTypes={nodeTypes} colorMode="dark"
-      width={compact ? 580 : 800} height={compact ? 246 : 325}
-      fitView fitViewOptions={fitOptions} minZoom={minimumZoom} maxZoom={maximumZoom}
+      width={800} height={325}
+      fitView fitViewOptions={workspaceFit} minZoom={minimumZoom} maxZoom={maximumZoom}
       nodesConnectable={false} nodesDraggable={false} nodesFocusable={false}
       edgesReconnectable={false} deleteKeyCode={null}
       zoomOnDoubleClick={false} zoomOnScroll={false} preventScrolling={false}
-      panOnDrag={!compact} zoomOnPinch={!compact}
       attributionPosition="top-right"
       onEdgeClick={(_, edge) => edge.data?.inspect()}
     >
       <Background id={id + '-grid'} variant={BackgroundVariant.Dots} gap={17} size={1} color="#4a4a58"/>
-      <FitVisibleGraph focus={focus} options={fitOptions}/>
+      <FitVisibleGraph focus={focus} options={workspaceFit}/>
       {children}
     </ReactFlow>
   )
