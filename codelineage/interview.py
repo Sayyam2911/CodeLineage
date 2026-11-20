@@ -141,7 +141,8 @@ class Interviews:
             session["pending"] = None
             event(records, session, f"proposal.{status}", proposalId=pending["id"])
 
-    def stage(self, session_id: str, auth: str, request: Answer, *, voice_answer: str | None = None) -> dict:
+    def stage(self, session_id: str, auth: str, request: Answer, *, voice_answer: str | None = None,
+              voice_turn: str | None = None) -> dict:
         with self.database.transaction() as records:
             session = self.authorize(records, session_id, auth, voice=voice_answer is not None)
             self.writable(session)
@@ -198,6 +199,11 @@ class Interviews:
             self.writable(session)
             if self.active_topic(session)["id"] != topic["id"] or session["revision"] != graph["revision"]:
                 raise HTTPException(409, "The review moved to a different topic or revision.")
+            voice_proposals = f"voice_proposals:{session_id}"
+            if voice_turn and (prior := records.get(voice_proposals, voice_turn)):
+                if (session.get("pending") or {}).get("id") == prior["proposalId"]:
+                    return self.public(session)
+                raise HTTPException(409, "This spoken answer was already used. Ask for a new answer.")
             self.retire(records, session, "superseded")
             originating = turn(records, session, "participant", voice_answer or answer, purpose="answer")
             proposal = {
@@ -210,6 +216,8 @@ class Interviews:
             }
             session["pending"] = proposal
             records.put(f"proposals:{session_id}", proposal["id"], proposal)
+            if voice_turn:
+                records.put(voice_proposals, voice_turn, {"proposalId": proposal["id"]})
             event(records, session, "proposal.pending", proposal=proposal)
             records.put("sessions", session_id, session)
             return self.public(session)

@@ -171,10 +171,13 @@ class AgoraVoice:
                                                  request_options=self.request_options(connection))
         return history.contents or []
 
-    def last_participant(self, connection: dict) -> str:
-        for message in reversed(self.history(connection)):
+    def last_participant(self, connection: dict) -> tuple[str, str]:
+        messages = self.history(connection)
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
             if message.role == "user" and message.content:
-                return message.content.strip()[:4000]
+                identity = token_digest(f"{connection['id']}:{index}:{message.content}")
+                return message.content.strip()[:4000], identity
         raise HTTPException(409, "No participant answer was found in the Agora session.")
 
     def speak(self, connection: dict, text: str) -> None:
@@ -185,50 +188,52 @@ class AgoraVoice:
         )
 
 
-def stalled_lookup_turn(messages: list) -> str | None:
-    lookups = 0
+def stalled_tool_turn(messages: list, name: str) -> str | None:
+    repeats = 0
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
         if message.role == "assistant" and message.content:
             return None
         if message.role == "user":
-            return token_digest(f"{index}:{message.content}") if lookups >= 2 and message.content else None
+            return token_digest(f"{index}:{message.content}") if repeats >= 2 and message.content else None
         if message.role == "tool" and message.content:
             try:
                 result = json.loads(message.content)
             except ValueError:
                 continue
-            if isinstance(result, dict) and "topic" in result and "findings" in result:
-                lookups += 1
+            if isinstance(result, dict) and result.get("tool") == name:
+                repeats += 1
     return None
 
 
-def speak_stalled_lookup(gateway, interviews: Interviews, session_id: str, connection: dict, result: dict):
+def lookup_reply(result: dict) -> tuple[str, dict | None]:
+    item = next(iter(result["claims"]), None) or result["topic"] or next(iter(result["findings"]), None)
+    if not item:
+        return "The rationale is still open. Which component or file should we look at?", None
+    source = next((ref for ref in item["evidence"] if ref["kind"] == "source"), None)
+    reply = item["statement"][:280].strip().rstrip(".") + "."
+    if item["origin"] == "inference":
+        reply = "The scan suggests this. " + reply
+    if source:
+        reply += f" See {source['path'][:120]}, line {source['start']}."
+    if not result["claims"]:
+        reply += " The rationale is still open."
+    return reply, source
+
+
+def speak_stalled_tool(gateway, interviews: Interviews, session_id: str, connection: dict,
+                       name: str, reply: str, source: dict | None):
     try:
         provider = gateway()
-        turn_id = stalled_lookup_turn(provider.history(connection))
+        turn_id = stalled_tool_turn(provider.history(connection), name)
         if not turn_id:
             return
         with interviews.database.transaction(write=True) as records:
             active = records.get("voice", session_id)
             if (not active or active["id"] != connection["id"] or active["state"] != "active"
-                    or active["expiresAt"] <= time.time() or active.get("spokenLookupTurn") == turn_id):
+                    or active["expiresAt"] <= time.time() or active.get("spokenToolTurn") == turn_id):
                 return
-            records.put("voice", session_id, active | {"spokenLookupTurn": turn_id})
-
-        item = next(iter(result["claims"]), None) or result["topic"] or next(iter(result["findings"]), None)
-        if item:
-            source = next((item for item in item["evidence"] if item["kind"] == "source"), None)
-            reply = item["statement"][:280].strip().rstrip(".") + "."
-            if item["origin"] == "inference":
-                reply = "The scan suggests this: " + reply
-            if source:
-                reply += f" See {source['path'][:120]}, line {source['start']}."
-            if not result["claims"]:
-                reply += " The rationale is still open."
-        else:
-            source = None
-            reply = "The rationale is still open. Which component or file should we look at?"
+            records.put("voice", session_id, active | {"spokenToolTurn": turn_id})
         provider.speak(connection, reply)
 
         if source:
@@ -240,7 +245,7 @@ def speak_stalled_lookup(gateway, interviews: Interviews, session_id: str, conne
                     event(records, session, "evidence.focus", evidence=source)
                     records.put("sessions", session_id, session)
     except Exception as exc:
-        logger.warning("Agora voice lookup recovery failed (%s).", getattr(exc, "status_code", type(exc).__name__))
+        logger.warning("Agora %s speech recovery failed (%s).", name, getattr(exc, "status_code", type(exc).__name__))
 
 
 class Connection(BaseModel):
@@ -343,6 +348,12 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
             connection = records.get("voice", session_id)
         if connection["expiresAt"] <= time.time() or connection["state"] not in {"starting", "active"}:
             raise HTTPException(401, "The voice connection expired.")
+
+        def tool_result(result: dict, reply: str, source: dict | None = None):
+            if connection.get("agentId"):
+                background.add_task(speak_stalled_tool, gateway, interviews, session_id, connection, name, reply, source)
+            return {"tool": name, **result}
+
         if name == "getDecisionContext":
             topic = None
             if session["mode"] == "update" and session["index"] < len(session["topics"]):
@@ -350,9 +361,7 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
             lookup = body.question.strip() or (topic["title"] if topic else "")
             answer = interviews.knowledge.context(session["snapshotId"], lookup, revision=session["revision"])
             result = {"topic": topic, **answer}
-            if connection.get("agentId"):
-                background.add_task(speak_stalled_lookup, gateway, interviews, session_id, connection, result)
-            return result
+            return tool_result(result, *lookup_reply(result))
         if name == "showEvidence":
             try:
                 excerpt = interviews.snapshots.source(session["snapshotId"], body.path, int(body.start), int(body.end))
@@ -362,10 +371,11 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
                 session = interviews.authorize(records, session_id, authorization, voice=True)
                 focus = {"kind": "source", "path": body.path, "start": int(body.start), "end": int(body.end),
                          "snapshotId": session["snapshotId"]}
-                session["evidenceFocus"] = focus
-                event(records, session, "evidence.focus", evidence=focus)
-                records.put("sessions", session_id, session)
-            return excerpt
+                if session.get("evidenceFocus") != focus:
+                    session["evidenceFocus"] = focus
+                    event(records, session, "evidence.focus", evidence=focus)
+                    records.put("sessions", session_id, session)
+            return tool_result(excerpt, f"I've opened {excerpt['path'][:160]}, starting at line {body.start}.")
         if name not in {"proposeChange", "confirmChange"}:
             raise HTTPException(404, "Unknown voice tool.")
         if session["mode"] != "update":
@@ -373,16 +383,19 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
         if name == "confirmChange":
             with database.transaction() as records:
                 receipt = records.get(f"receipts:{session_id}", body.proposalId)
-            return {"status": "saved", "revision": receipt["revision"]} if receipt else {
+            if receipt:
+                revision = receipt["revision"]
+                return tool_result({"status": "saved", "revision": revision}, f"Saved as revision {revision}.")
+            return tool_result({
                 "status": "pending", "message": "Ask the participant to review and confirm the exact summary on screen.",
-            }
+            }, "Please review and confirm the summary on screen.")
         interviews.writable(session)
         if not body.summary.strip():
             raise HTTPException(422, "Provide the deduction to read back.")
         if not connection.get("agentId"):
             raise HTTPException(409, "The Agora agent is still starting.")
         try:
-            answer = gateway().last_participant(connection)
+            answer, turn_id = gateway().last_participant(connection)
         except HTTPException:
             raise
         except Exception as exc:
@@ -391,7 +404,11 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
             "", "yes", "no", "okay", "ok", "i don't know", "i don’t know", "not sure", "unknown",
         }:
             raise HTTPException(409, "The latest transcript does not contain a rationale.")
-        updated = interviews.stage(session_id, authorization, Answer(text=body.summary), voice_answer=answer)
-        return {"proposalId": updated["pending"]["id"], "summary": updated["pending"]["summary"]}
+        updated = interviews.stage(session_id, authorization, Answer(text=body.summary), voice_answer=answer, voice_turn=turn_id)
+        proposal = updated["pending"]
+        instruction = "Please review and confirm the summary on screen."
+        reply = proposal["summary"] + ". " + instruction
+        return tool_result({"proposalId": proposal["id"], "summary": proposal["summary"]},
+                           reply if len(reply.encode()) <= 512 else instruction)
 
     return router

@@ -43,7 +43,7 @@ def test_published_pipeline_inherits_providers_and_uses_agent_auth(monkeypatch):
     monkeypatch.delenv("MURF_VOICE_ID", raising=False)
     voice = AgoraVoice()
     assert voice.available()
-    connection = {"channel": "speech-room", "uid": 100001, "agentUid": 900001}
+    connection = {"id": "connection", "channel": "speech-room", "uid": 100001, "agentUid": 900001}
 
     def start(app_id, *, name, pipeline_id, properties, request_options):
         assert app_id == "1" * 32 and name == connection["channel"]
@@ -67,7 +67,7 @@ def test_published_pipeline_inherits_providers_and_uses_agent_auth(monkeypatch):
     voice.client = SimpleNamespace(agents=SimpleNamespace(start=start, get_history=history, stop=authorized))
     session = {"mode": "understand", "id": "session"}
     connection["agentId"] = voice.start(session, connection, "tool-token")
-    assert voice.last_participant(connection) == "Webhook retries are limited."
+    assert voice.last_participant(connection)[0] == "Webhook retries are limited."
     voice.stop(connection)
 
 
@@ -80,6 +80,7 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
     class FakeGateway:
         token = None
         spoken = []
+        tool_name = "getDecisionContext"
 
         @staticmethod
         def available():
@@ -96,14 +97,14 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
         @staticmethod
         def last_participant(connection):
             assert connection["agentId"] == "provider-agent"
-            return "We retry webhook errors once."
+            return "We retry webhook errors once.", "provider-turn"
 
         @staticmethod
         def history(connection):
             assert connection["agentId"] == "provider-agent"
-            lookup = SimpleNamespace(role="tool", content='{"topic": null, "findings": []}')
+            lookup = SimpleNamespace(role="tool", content='{"tool": "' + FakeGateway.tool_name + '"}')
             return [
-                SimpleNamespace(role="user", content="Which file handles webhook retries?"),
+                SimpleNamespace(role="user", content=FakeGateway.tool_name),
                 lookup, SimpleNamespace(role="assistant", content=None), lookup,
             ]
 
@@ -132,10 +133,18 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
         for _ in range(2):
             assert client.post(tools + "/getDecisionContext", headers=agent, json={}).status_code == 200
         assert len(FakeGateway.spoken) == 1
+        FakeGateway.tool_name = "showEvidence"
+        assert client.post(tools + "/showEvidence", headers=agent, json={
+            "path": "module_0.py", "start": "1", "end": "1",
+        }).status_code == 200
+        assert len(FakeGateway.spoken) == 2 and "module_0.py" in FakeGateway.spoken[-1]
         assert client.post(tools + "/proposeChange", headers=browser, json={"summary": "Fake."}).status_code == 401
         result = client.post(tools + "/proposeChange", headers=agent, json={"summary": "Webhook retries are limited to one."})
         assert result.status_code == 200, result.text
         proposal_id = result.json()["proposalId"]
+        repeated = client.post(tools + "/proposeChange", headers=agent, json={"summary": "A repeated deduction."})
+        assert repeated.json()["proposalId"] == proposal_id
+        assert repeated.json()["summary"] == result.json()["summary"]
         path = "/sessions/" + session["id"]
         assert client.post(path + "/readback", headers=agent, json={"proposalId": proposal_id}).status_code == 401
         payload = {"proposalId": proposal_id}
