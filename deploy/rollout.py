@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 
 from deploy.google_cloud import JOB, SERVICE
 from deploy.smoke import check_service
@@ -42,9 +43,17 @@ def rollout(project: str, region: str, image: str, suffix: str) -> None:
 
     cloud("services", "update", SERVICE, f"--image={image}", f"--revision-suffix={suffix}", "--no-traffic",
           "--deploy-health-check")
-    ready = cloud("services", "describe", SERVICE, "--format=value(status.latestReadyRevisionName)", capture=True)
-    if ready != revision:
-        raise ValueError(f"The candidate revision {revision} did not become ready.")
+    deadline = time.monotonic() + 90
+    while True:
+        details = json.loads(cloud("revisions", "describe", revision, "--format=json(status)", capture=True))
+        conditions = details.get("status", {}).get("conditions", [])
+        ready = next((condition for condition in conditions if condition.get("type") == "Ready"), {})
+        if ready.get("status") == "True":
+            break
+        if ready.get("status") == "False" or time.monotonic() >= deadline:
+            message = ready.get("message") or "Cloud Run did not report a successful readiness check."
+            raise ValueError(f"The candidate revision {revision} did not become ready. {message}")
+        time.sleep(2)
 
     traffic_attempted = False
     try:
