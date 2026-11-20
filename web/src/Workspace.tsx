@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   ArrowLeft, ArrowRight, ArrowUpRight, AudioLines, Check, ChevronDown, CircleAlert,
-  Code2, FileCode2, GitCommitHorizontal, GitFork, Github, LoaderCircle, Search, Send, SquareTerminal,
+  Code2, FileCode2, GitCommitHorizontal, GitFork, Github, LoaderCircle, PanelRight, Search, Send, SquareTerminal,
 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
@@ -30,6 +31,7 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
   const [turns, setTurns] = useState<Turn[]>([])
   const [activeEdge, setActiveEdge] = useState<Edge | null>(null)
   const [connectionIssue, setConnectionIssue] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const [excerpt, setExcerpt] = useState<Excerpt | null>(null)
   const [evidenceNote, setEvidenceNote] = useState<Evidence | null>(null)
   const [sourceError, setSourceError] = useState('')
@@ -59,10 +61,16 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
   const seq = useRef(initial.seq)
   const shownRevision = useRef(initial.revision)
   const sourceSequence = useRef(0)
+  const heading = useRef<HTMLHeadingElement>(null)
   const path = '/sessions/' + session.id
   const snapshot = '/snapshots/' + session.snapshotId
   const topic = session.topics[session.index]
   const interview = session.mode === 'update'
+
+  useEffect(() => {
+    window.scrollTo(0, 0)
+    heading.current?.focus({ preventScroll: true })
+  }, [])
 
   async function showEvidence(ref: Evidence) {
     sourceRequest.current?.abort()
@@ -300,15 +308,15 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
   }
 
   return (
-    <main id="main-content" className="workspace">
+    <main id="main-content" tabIndex={-1} className="workspace">
       <header className="workspace-heading">
         <div className="workspace-project">
-          <Button type="button" variant="ghost" size="icon-sm" aria-label="Back to repository launcher" onClick={onExit}>
-            <ArrowLeft aria-hidden="true"/>
+          <Button type="button" variant="ghost" size="sm" className="workspace-back" onClick={onExit}>
+            <ArrowLeft aria-hidden="true"/> Repositories
           </Button>
           <div className="workspace-project-name">
-            <Github aria-hidden="true" size={19}/>
-            <h1 title={session.repo}>{session.repo}</h1>
+            <Github aria-hidden="true" size={26}/>
+            <h1 ref={heading} tabIndex={-1} title={session.repo} translate="no">{session.repo}</h1>
           </div>
         </div>
         <div className="workspace-metadata">
@@ -316,6 +324,40 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
             <GitCommitHorizontal aria-hidden="true"/> {manifest.commit.slice(0, 7)}
           </Badge>}
           <Badge variant="secondary">{interview ? 'Review' : 'Read only'}</Badge>
+          <Sheet open={detailsOpen} onOpenChange={setDetailsOpen}>
+            <SheetTrigger asChild><Button type="button" variant="outline" size="sm" className="details-trigger">
+              <PanelRight aria-hidden="true"/> Repository details
+            </Button></SheetTrigger>
+            <SheetContent className="repository-details">
+              <SheetHeader>
+                <SheetTitle>Repository details</SheetTitle>
+                <SheetDescription>{session.repo}</SheetDescription>
+              </SheetHeader>
+              <div className="detail-groups">
+                <ReviewTopics session={session} claims={graph?.claims ?? []}
+                  onTopic={item => {
+                    const ref = item.evidence.find(item => item.kind === 'source')
+                    setAnchor(item.targetId); setSelected(item.targetId); setActiveEdge(null)
+                    if (ref && !applying) void showEvidence(ref)
+                    setDetailsOpen(false)
+                  }}
+                  onClaim={claim => {
+                    if (claim.targetId && claim.snapshotId === session.snapshotId) {
+                      setAnchor(claim.targetId); setSelected(claim.targetId)
+                    }
+                    const ref = claim.evidence.find(item => item.kind === 'interview') ?? claim.evidence[0]
+                    if (ref && !applying) void showEvidence(ref)
+                    setDetailsOpen(false)
+                  }}/>
+                {manifest && <Coverage manifest={manifest} analysis={analysis}/>}
+                {review && Object.keys(review.scopeBaselines).length > 0 &&
+                  <PriorReview review={review} manifest={manifest} onOpen={ref => {
+                    void showEvidence(ref)
+                    setDetailsOpen(false)
+                  }}/>}
+              </div>
+            </SheetContent>
+          </Sheet>
         </div>
       </header>
 
@@ -325,25 +367,6 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
       </Alert>}
 
       <div className="workbench">
-        <aside className="workbench-rail" aria-label="Repository navigation">
-          <ReviewTopics session={session} claims={graph?.claims ?? []}
-            onTopic={item => {
-              const ref = item.evidence.find(item => item.kind === 'source')
-              setAnchor(item.targetId); setSelected(item.targetId); setActiveEdge(null)
-              if (ref && !applying) void showEvidence(ref)
-            }}
-            onClaim={claim => {
-              if (claim.targetId && claim.snapshotId === session.snapshotId) {
-                setAnchor(claim.targetId); setSelected(claim.targetId)
-              }
-              const ref = claim.evidence.find(item => item.kind === 'interview') ?? claim.evidence[0]
-              if (ref && !applying) void showEvidence(ref)
-            }}/>
-          {manifest && <Coverage manifest={manifest} analysis={analysis}/>}
-          {review && Object.keys(review.scopeBaselines).length > 0 &&
-            <PriorReview review={review} manifest={manifest} onOpen={ref => void showEvidence(ref)}/>}
-        </aside>
-
         <div className="workbench-content">
           <div className="panels">
             <section className="editor-panel" aria-labelledby="architecture-title">
@@ -357,6 +380,7 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
               </div>}
               {graph
                 ? <Diagram graph={graph} anchor={anchor} selected={selected} selectedEdge={activeEdge}
+                    excerpt={sourceSnapshot === session.snapshotId ? excerpt : null}
                     onEdge={selectEdge} onAnchor={setAnchor} onSelect={selectNode}/>
                 : <div className="panel-empty" aria-busy="true">
                     <Skeleton className="graph-skeleton"/><span>Loading architecture…</span>
@@ -464,8 +488,10 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                   <TabsTrigger value="transcript">Transcript</TabsTrigger>
                 </TabsList>}
               </header>
-              <TabsContent value="conversation" className="conversation-body">
+              <div className="voice-strip">
                 <Voice sessionId={session.id} token={session.token} disabled={session.finished}/>
+              </div>
+              <TabsContent value="conversation" className="conversation-body">
                 {error && <Alert variant="destructive" className="inline-notice">
                   <CircleAlert aria-hidden="true"/><AlertDescription>{error}</AlertDescription>
                 </Alert>}

@@ -18,7 +18,7 @@ uv run --locked uvicorn codelineage.main:app --host 127.0.0.1 --port 8000
 
 Open `http://localhost:8000` in a browser. FastAPI serves the static export from the Next.js App Router. For development with live reload, keep the backend running and start `npm --prefix web run dev` in a second terminal. Open `http://localhost:3000`. The Next.js development server forwards API requests and the event stream to FastAPI. Set `CODELINEAGE_API_ORIGIN` for a different backend origin or `CODELINEAGE_DATA` for a different database and snapshot directory.
 
-Choose **Use the Healthchecks demo**, then **Create or update code lineage**. With the ref left empty, the demo resolves to Healthchecks v5.0.3. The first question focuses alert delivery and shows the pinned ordering code. Type a reason, inspect the proposed summary, interrupt or correct it, and approve it explicitly. In a fresh **Understand code lineage** session, ask why new webhook channels wait. The answer separates the participant's rationale from the source excerpt. A line can still be opened for a file Graphify could not parse.
+Choose **Create or update code lineage**, then **Use the Healthchecks demo** and **Open review**. With the ref left empty, the demo resolves to Healthchecks v5.0.3. The first question focuses alert delivery and shows the pinned ordering code. Type a reason, inspect the proposed summary, interrupt or correct it, and approve it explicitly. In a fresh **Understand code lineage** session, ask why new webhook channels wait. The answer separates the participant's rationale from the source excerpt. A line can still be opened for a file Graphify could not parse.
 
 ~~~sh
 uv run --locked pytest

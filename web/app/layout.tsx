@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import type { ReactNode } from 'react'
 import '@fontsource-variable/geist'
+import '@xyflow/react/dist/style.css'
 import '../src/styles.css'
 
 export const metadata: Metadata = {
@@ -9,7 +10,7 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: '#141716',
+  themeColor: '#0a0a0b',
   colorScheme: 'dark',
 }
 
