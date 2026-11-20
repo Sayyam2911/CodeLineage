@@ -54,6 +54,31 @@ export function Voice({ sessionId, token, disabled, available, setAvailable }: {
   }, [sessionId, disabled, setAvailable])
 
 
+  useEffect(() => {
+    const connectionId = joined.current.info?.connectionId
+    if (disabled || state !== 'active' || !connectionId) return
+    const controller = new AbortController()
+    let timer: number
+
+    async function watch() {
+      try {
+        const result = await request<{ active: boolean }>(prefix + '/watch', { connectionId }, token, controller.signal)
+        if (controller.signal.aborted) return
+        if (!result.active) {
+          await release().catch(() => undefined)
+          if (!controller.signal.aborted) setState('idle')
+          return
+        }
+      } catch {
+        if (controller.signal.aborted) return
+      }
+      timer = window.setTimeout(() => void watch(), 4000)
+    }
+
+    timer = window.setTimeout(() => void watch(), 4000)
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [disabled, state, prefix, token])
+
   async function start() {
     setState('starting'); setError('')
     try {

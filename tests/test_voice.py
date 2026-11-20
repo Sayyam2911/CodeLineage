@@ -71,7 +71,7 @@ def test_published_pipeline_inherits_providers_and_uses_agent_auth(monkeypatch):
     voice.stop(connection)
 
 
-def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
+def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path, monkeypatch):
     snapshots = Snapshots(tmp_path / "snapshots")
     database = Database(tmp_path / "lineage.db")
     fixture(snapshots, "a" * 64)
@@ -138,6 +138,12 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
             "path": "module_0.py", "start": "1", "end": "1",
         }).status_code == 200
         assert len(FakeGateway.spoken) == 2 and "module_0.py" in FakeGateway.spoken[-1]
+        FakeGateway.tool_name = "silent follow-up"
+        monkeypatch.setattr("codelineage.voice.VOICE_REPLY_TIMEOUT", 0)
+        assert client.post(voice + "/watch", headers=agent, json=connection).status_code == 401
+        for _ in range(3):
+            assert client.post(voice + "/watch", headers=browser, json=connection).json()["active"]
+        assert len(FakeGateway.spoken) == 3
         assert client.post(tools + "/proposeChange", headers=browser, json={"summary": "Fake."}).status_code == 401
         result = client.post(tools + "/proposeChange", headers=agent, json={"summary": "Webhook retries are limited to one."})
         assert result.status_code == 200, result.text
