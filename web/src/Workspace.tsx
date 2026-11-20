@@ -12,12 +12,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
+import { decisionEvidence } from '@/lib/architecture'
 import { Diagram } from './Diagram'
-import { Coverage, EvidenceLinks, PriorReview, ReviewTopics } from './Review'
+import { ClaimEntry, Coverage, EvidenceLinks, PriorReview, ReviewTopics } from './Review'
 import { SourceExcerpt } from './SourceExcerpt'
 import { useInterviewVoice, VoiceControls, VoicePresence } from './Voice'
 import { query, request } from './api'
-import type { Analysis, ChangeOptions, Edge, Evidence, Excerpt, Graph, Manifest, Node, Review, Revision, Session, SessionEvent, Topic, Turn } from './api'
+import type { Analysis, ChangeOptions, Claim, Edge, Evidence, Excerpt, Graph, Manifest, Node, Review, Revision, Session, SessionEvent, Topic, Turn } from './api'
 
 type Operation = ChangeOptions['operation']
 
@@ -32,7 +33,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
   const [connectionIssue, setConnectionIssue] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [excerpt, setExcerpt] = useState<Excerpt | null>(null)
-  const [evidenceNote, setEvidenceNote] = useState<Evidence | null>(null)
+  const [evidenceNote, setEvidenceNote] = useState<Evidence | Claim | null>(null)
   const [sourceError, setSourceError] = useState('')
   const [sourceLoading, setSourceLoading] = useState(false)
   const [sourceSnapshot, setSourceSnapshot] = useState(initial.snapshotId)
@@ -40,6 +41,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
   const sourceRequest = useRef<AbortController | null>(null)
   const [anchor, setAnchor] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
+  const [decisionId, setDecisionId] = useState<string | null>(null)
   const [file, setFile] = useState('')
   const [first, setFirst] = useState(1)
   const [last, setLast] = useState<number | ''>('')
@@ -58,12 +60,14 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
   const shownRevision = useRef(initial.revision)
   const sourceSequence = useRef(0)
   const heading = useRef<HTMLHeadingElement>(null)
+  const architecture = useRef<HTMLElement>(null)
   const path = '/sessions/' + session.id
   const snapshot = '/snapshots/' + session.snapshotId
   const topic = session.topics[session.index]
   const interview = session.mode === 'update'
   const topicSource = topic?.evidence.find(item => item.kind === 'source')
   const activeQuestion = interview && !session.finished && !receipt ? topic : undefined
+  const decision = graph?.claims.find(claim => claim.claimId === decisionId)
   const voice = useInterviewVoice({
     sessionId: session.id, token: session.token, enabled: !session.finished && (!interview || !!topic), autoConnect,
     topicId: activeQuestion?.id, announceTopic: !!activeQuestion && !session.pending,
@@ -128,6 +132,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
   }
 
   function showTopicEvidence(active: Topic, ref: Evidence, followConfig = true) {
+    setDecisionId(null)
     setAnchor(active.targetId); setSelected(active.targetId); setActiveEdge(null)
     void showEvidence(ref, followConfig)
   }
@@ -137,6 +142,22 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
     setOperation('annotate'); setChangeLabel(''); setRelated(''); setScopes(''); setSupersedes(''); setExceptionTo('')
     const ref = active.evidence.find(item => item.kind === 'source') ?? active.evidence[0]
     if (ref) showTopicEvidence(active, ref)
+    else setDecisionId(null)
+  }
+
+  function inspectDecision(claim: Claim) {
+    sourceRequest.current?.abort()
+    sourceSequence.current += 1
+    setSourceLoading(false); setSourceError(''); setEvidenceNote(claim); setActiveEdge(null)
+  }
+
+  async function focusDecision(claim: Claim) {
+    setDecisionId(claim.claimId)
+    const target = claim.snapshotId === session.snapshotId ? claim.targetId : null
+    setAnchor(target); setSelected(target); setActiveEdge(null)
+    const ref = decisionEvidence(claim)
+    if (ref) await showEvidence(ref)
+    else inspectDecision(claim)
   }
 
   async function loadGraph(revision: number) {
@@ -159,15 +180,11 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
     if (change.revision <= appliedRevision.current) return
     appliedRevision.current = change.revision
     setReceipt(change)
-    setActiveEdge(null)
     setOperation('annotate'); setChangeLabel(''); setRelated(''); setScopes(''); setSupersedes(''); setExceptionTo('')
     setApplying(true)
     try {
-      const reference = (change.claim.operation === 'add_component'
-        ? change.claim.evidence.find(item => item.kind === 'interview')
-        : change.claim.evidence.find(item => item.kind === 'source')) ?? change.claim.evidence.at(-1)
-      if (change.claim.targetId) setSelected(change.claim.targetId)
-      await Promise.all([loadGraph(change.revision), refresh(), loadTurns(), reference ? showEvidence(reference) : undefined])
+      await Promise.all([loadGraph(change.revision), refresh(), loadTurns(), focusDecision(change.claim)])
+      architecture.current?.scrollIntoView({ block: 'nearest' })
     } catch (reason) {
       setError('Revision saved. Refresh failed: ' + (reason as Error).message)
     } finally {
@@ -187,18 +204,17 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
     if (interview) void request<Review>(snapshot + '/review', undefined, undefined, abort.signal)
       .then(setReview).catch(reason => { if (!cancelled) setError((reason as Error).message) })
     void loadTurns(abort.signal).catch(() => undefined)
-    if (initial.evidenceFocus) void showEvidence(initial.evidenceFocus)
-    else if (initial.latestReceipt && !initial.pending) {
-      setSelected(initial.latestReceipt.claim.targetId)
-      const ref = initial.latestReceipt.claim.evidence[0]
-      if (ref) void showEvidence(ref)
-    } else focusTopic(initial.topics[initial.index])
+    if (initial.latestReceipt && !initial.pending) void focusDecision(initial.latestReceipt.claim)
+    else if (initial.evidenceFocus) void showEvidence(initial.evidenceFocus)
+    else focusTopic(initial.topics[initial.index])
 
     async function synchronize() {
       const state = await refresh(true)
       if (state.latestReceipt && state.latestReceipt.revision > appliedRevision.current) await applied(state.latestReceipt)
-      else if (state.revision > shownRevision.current) await loadGraph(state.revision)
-      if (state.evidenceFocus) await showEvidence(state.evidenceFocus)
+      else {
+        if (state.revision > shownRevision.current) await loadGraph(state.revision)
+        if (state.evidenceFocus) await showEvidence(state.evidenceFocus)
+      }
       await loadTurns(abort.signal)
       setApplying(false)
     }
@@ -292,8 +308,11 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
   const sourceFiles = useMemo(() => manifest
     ? Object.keys(manifest.files).filter(name => manifest.files[name].text) : [], [manifest])
 
-  function browseEvidence(ref: Evidence) {
-    setAnchor(null); setSelected(null); setActiveEdge(null)
+  function browseEvidence(ref: Evidence, keepDecision = false) {
+    if (!keepDecision) {
+      setDecisionId(null); setAnchor(null); setSelected(null)
+    }
+    setActiveEdge(null)
     void showEvidence(ref)
   }
 
@@ -331,17 +350,16 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
               <div className="detail-groups">
                 <ReviewTopics session={session} claims={graph?.claims ?? []}
                   onTopic={item => {
-                    const ref = item.evidence.find(item => item.kind === 'source')
-                    setAnchor(item.targetId); setSelected(item.targetId); setActiveEdge(null)
-                    if (ref && !applying) void showEvidence(ref)
+                    const saved = graph?.claims.find(claim => claim.snapshotId === session.snapshotId && claim.topicId === item.id)
+                    if (saved) void focusDecision(saved)
+                    else {
+                      const ref = item.evidence.find(item => item.kind === 'source') ?? item.evidence[0]
+                      if (ref && !applying) showTopicEvidence(item, ref, false)
+                    }
                     setDetailsOpen(false)
                   }}
                   onClaim={claim => {
-                    if (claim.targetId && claim.snapshotId === session.snapshotId) {
-                      setAnchor(claim.targetId); setSelected(claim.targetId)
-                    }
-                    const ref = claim.evidence.find(item => item.kind === 'interview') ?? claim.evidence[0]
-                    if (ref && !applying) void showEvidence(ref)
+                    if (!applying) void focusDecision(claim)
                     setDetailsOpen(false)
                   }}/>
                 {manifest && <Coverage manifest={manifest} analysis={analysis}/>}
@@ -358,7 +376,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
                     <div>
                       <Label htmlFor="change-type">Change type</Label>
                       <select id="change-type" value={operation} onChange={event => setOperation(event.target.value as Operation)}>
-                        <option value="annotate">Annotate component</option>
+                        <option value="annotate">Record a decision</option>
                         <option value="add_component">Add component</option>
                         <option value="add_connection">Add connection</option>
                       </select>
@@ -424,7 +442,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
         <div className="workbench-content">
           <VoicePresence voice={voice} interview={interview}/>
           <div className="panels">
-            <section className="editor-panel" aria-labelledby="architecture-title">
+            <section className="editor-panel" aria-labelledby="architecture-title" ref={architecture}>
               <header className="panel-heading">
                 <GitFork aria-hidden="true" size={17}/>
                 <h2 id="architecture-title">Architecture</h2>
@@ -435,8 +453,9 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
               </div>}
               {graph
                 ? <Diagram graph={graph} manifest={manifest} anchor={anchor} selected={selected} selectedEdge={activeEdge}
-                    excerpt={sourceSnapshot === session.snapshotId ? excerpt : null} topic={topic}
-                    onEdge={selectEdge} onAnchor={setAnchor} onSelect={selectNode} onSource={browseEvidence}/>
+                    excerpt={sourceSnapshot === session.snapshotId ? excerpt : null} topic={activeQuestion} decision={decision}
+                    onEdge={selectEdge} onAnchor={id => { setDecisionId(null); setAnchor(id) }} onSelect={selectNode}
+                    onSource={browseEvidence} onDecision={inspectDecision}/>
                 : <div className="panel-empty" aria-busy="true">
                     <Skeleton className="graph-skeleton"/><span>Loading architecture…</span>
                   </div>}
@@ -449,7 +468,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
                 {topic && topicSource && !receipt && !session.finished &&
                   <Button type="button" variant="ghost" size="sm"
                     onClick={() => showTopicEvidence(topic, topicSource)}>Current topic</Button>}
-                {excerpt && <Button asChild variant="ghost" size="icon-sm">
+                {excerpt && !evidenceNote && <Button asChild variant="ghost" size="icon-sm">
                   <a href={excerpt.url} target="_blank" rel="noreferrer" title="Open pinned lines on GitHub" aria-label="Open pinned lines on GitHub">
                     <ArrowUpRight aria-hidden="true"/>
                   </a>
@@ -506,7 +525,11 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
                     }}>Retry evidence</Button>
                   </div>
                 : evidenceNote
-                  ? <article className="attribution">
+                  ? 'claimId' in evidenceNote
+                    ? <div className="decision-details"><ClaimEntry claim={evidenceNote} showTitle
+                        onOpen={ref => void showEvidence(ref.kind === 'source' && !ref.snapshotId
+                          ? { ...ref, snapshotId: evidenceNote.snapshotId } : ref)}/></div>
+                    : <article className="attribution">
                       <h3>{evidenceNote.speaker ?? evidenceNote.title}</h3>
                       <p>{evidenceNote.text}</p>
                       {evidenceNote.url && <Button asChild size="sm" variant="link">
@@ -522,7 +545,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
             </section>
           </div>
 
-          <section className="editor-panel interview-console" aria-labelledby="interview-title">
+          <section className="editor-panel interview-console" aria-labelledby="interview-title" data-receipt={!!receipt}>
             <header className="panel-heading">
               <h2 id="interview-title">{interview ? 'Architecture interview' : 'Ask the lineage'}</h2>
               {activeQuestion && <Badge variant="outline">Question {session.index + 1} of {session.topics.length}</Badge>}
@@ -536,7 +559,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
                 <div className="claim-receipt">
                   <Alert className="inline-notice receipt" role="status">
                     <Check aria-hidden="true"/>
-                    <AlertDescription>Saved revision {receipt.revision} · {receipt.claim.statement}</AlertDescription>
+                    <AlertDescription>Added to architecture · Revision {receipt.revision} · {receipt.claim.statement}</AlertDescription>
                   </Alert>
                   <div className="receipt-actions">
                     <EvidenceLinks items={receipt.claim.evidence} onOpen={ref => void showEvidence(ref)}/>

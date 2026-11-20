@@ -35,6 +35,7 @@ export type ChangeOptions = {
 
 export type Claim = {
   claimId: string
+  topicId?: string
   title: string
   statement: string
   origin: string

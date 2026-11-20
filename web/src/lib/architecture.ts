@@ -1,6 +1,6 @@
-import type { Edge, Evidence, Excerpt, Graph, Manifest, Node, Topic } from '../api'
+import type { Claim, Edge, Evidence, Excerpt, Graph, Manifest, Node, Topic } from '../api'
 
-export type DiagramRole = 'focus' | 'incoming' | 'outgoing' | 'source' | 'directory' | 'topic'
+export type DiagramRole = 'focus' | 'incoming' | 'outgoing' | 'source' | 'directory' | 'topic' | 'decision'
 export type DiagramItem = {
   id: string
   label: string
@@ -10,6 +10,7 @@ export type DiagramItem = {
   y: number
   node?: Node
   source?: Evidence
+  decision?: Claim
   directory?: string
 }
 
@@ -19,6 +20,7 @@ export type DiagramLink = {
   label: string
   origin: string
   evidence?: Edge
+  decision?: Claim
 }
 
 export type Structure = {
@@ -31,6 +33,48 @@ export type Structure = {
 const filename = (path: string) => path.split('/').at(-1) ?? path
 const directoryOf = (path: string) => path.includes('/') ? path.split('/')[0] : ''
 const relation = (edge: Edge) => edge.relation.replaceAll('_', ' ')
+
+export function decisionEvidence(claim: Claim) {
+  const ref = claim.evidence.find(item => item.kind === 'source' && item.path && item.start)
+    ?? claim.evidence.find(item => item.kind === 'document')
+  return ref?.kind === 'source' && !ref.snapshotId ? { ...ref, snapshotId: claim.snapshotId } : ref
+}
+
+export function decisionStructure(graph: Graph, claim: Claim, narrow: boolean): Structure {
+  const decision: DiagramItem = {
+    id: 'decision:' + claim.claimId, label: claim.title, subtitle: 'Confirmed · Revision ' + claim.revision,
+    role: 'decision', x: 0, y: 0, decision: claim,
+  }
+  const items = [decision]
+  const links: DiagramLink[] = []
+  const current = claim.snapshotId === graph.snapshotId
+  const target = current ? graph.nodes.find(node => node.id === claim.targetId) : undefined
+  const related = current && claim.operation === 'add_connection'
+    ? graph.nodes.find(node => node.id === claim.relatedId) : undefined
+  const ref = decisionEvidence(claim)
+  const position = narrow ? { x: 0, y: 106 } : { x: 282, y: 5 }
+  const subject: DiagramItem | undefined = target ? {
+    ...position, id: target.id, label: target.label, subtitle: target.path ?? 'Interview component', role: 'focus', node: target,
+  } : ref ? {
+    ...position, id: 'evidence:' + claim.claimId, label: ref.path ? filename(ref.path) : ref.title ?? 'Source document',
+    subtitle: ref.path ? ref.path + ' · L' + ref.start : 'Supporting document', role: 'source', source: ref,
+  } : undefined
+  if (subject) {
+    items.push(subject)
+    links.push({ source: decision.id, target: subject.id, label: target ? 'explains' : 'cites', origin: 'decision', decision: claim })
+  }
+  const connection = target && related ? graph.edges.find(edge =>
+    edge.claimId === claim.claimId && edge.source === target.id && edge.target === related.id) : undefined
+  if (connection && related) {
+    if (related.id !== subject?.id) {
+      items.push({ id: related.id, label: related.label, subtitle: related.path ?? 'Interview component', role: 'outgoing',
+        x: narrow ? 0 : 532, y: narrow ? 201 : 5, node: related })
+    }
+    links.push({ source: connection.source, target: connection.target, label: relation(connection),
+      origin: connection.origin, evidence: connection })
+  }
+  return { items, links, title: claim.title, description: 'Confirmed in interview · Revision ' + claim.revision }
+}
 
 function componentForExcerpt(graph: Graph, excerpt: Excerpt) {
   const line = excerpt.highlight?.start ?? excerpt.lines[0]?.number

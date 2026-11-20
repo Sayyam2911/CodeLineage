@@ -93,9 +93,10 @@ export function PriorReview({ review, manifest, onOpen }: {
   )
 }
 
-export function ClaimEntry({ claim, onOpen }: { claim: Claim; onOpen: (item: Evidence) => void }) {
+export function ClaimEntry({ claim, onOpen, showTitle }: { claim: Claim; onOpen: (item: Evidence) => void; showTitle?: boolean }) {
   return (
     <article className="context-entry">
+      {showTitle && <h3>{claim.title}</h3>}
       <strong>{claim.statement}</strong><p>Confirmed by {claim.speaker} · {claim.scopes.join(', ')}</p>
       <EvidenceLinks items={claim.evidence} onOpen={onOpen}/>
     </article>

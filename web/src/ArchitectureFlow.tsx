@@ -2,8 +2,8 @@ import { useEffect } from 'react'
 import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
-  Background, BackgroundVariant, Handle, MarkerType, Position, ReactFlow,
-  useNodesInitialized, useReactFlow, useStore,
+  Background, BackgroundVariant, getNodesBounds, getViewportForBounds, Handle, MarkerType, Position, ReactFlow,
+  useReactFlow, useStore,
 } from '@xyflow/react'
 import type { Edge, FitViewOptions, Node, NodeProps, XYPosition } from '@xyflow/react'
 import type { DiagramRole } from '@/lib/architecture'
@@ -30,8 +30,8 @@ const minimumZoom = 0.32
 const maximumZoom = 1.85
 
 export function componentNode(id: string, position: XYPosition, data: ComponentData): ArchitectureNode {
-  const width = data.role ? 190 : 172
-  const height = data.role ? 59 : 49
+  const width = data.role === 'decision' ? 222 : data.role ? 190 : 172
+  const height = data.role === 'decision' ? 68 : data.role ? 59 : 49
   const handles = ports.map(port => ({
     ...port, width: 2, height: 2,
     x: port.position === Position.Left ? 0 : port.position === Position.Right ? width - 2 : width / 2 - 1,
@@ -66,7 +66,8 @@ export function componentConnection({
     id, source: source.id, target: target.id,
     sourceHandle: 'source-' + sourceSide, targetHandle: 'target-' + targetSide,
     type: 'default', selectable: false, ariaRole: 'button', ariaLabel: label,
-    markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--graph-line)', width: 15, height: 15 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: origin === 'decision' || origin === 'interview'
+      ? 'var(--graph-confirmed)' : 'var(--graph-line)', width: 15, height: 15 },
     className: cn('architecture-edge', origin, active && 'active'),
     data: { inspect },
     domAttributes: {
@@ -99,18 +100,18 @@ function Component({ data }: NodeProps<ArchitectureNode>) {
 }
 
 const nodeTypes = { component: Component }
-export const workspaceFit: FitViewOptions = { padding: { x: '22px', y: '30px' }, maxZoom: 1.2 }
+export const workspaceFit = { padding: { x: '22px', y: '30px' }, maxZoom: 1.2 } satisfies FitViewOptions
 
-function FitVisibleGraph({ focus, options }: { focus?: string; options: FitViewOptions }) {
-  const { fitView, viewportInitialized } = useReactFlow()
-  const initialized = useNodesInitialized()
+function FitVisibleGraph({ focus, nodes }: { focus?: string; nodes: ArchitectureNode[] }) {
+  const { setViewport, viewportInitialized } = useReactFlow()
   const width = useStore(store => store.width)
   const height = useStore(store => store.height)
+  const { x, y, width: contentWidth, height: contentHeight } = getNodesBounds(nodes)
   useEffect(() => {
-    if (!initialized || !viewportInitialized || !width || !height) return
-    const frame = requestAnimationFrame(() => { void fitView(options) })
-    return () => cancelAnimationFrame(frame)
-  }, [initialized, viewportInitialized, width, height, focus, fitView, options])
+    if (!viewportInitialized || !width || !height || !contentWidth || !contentHeight) return
+    void setViewport(getViewportForBounds({ x, y, width: contentWidth, height: contentHeight },
+      width, height, minimumZoom, workspaceFit.maxZoom, workspaceFit.padding))
+  }, [viewportInitialized, width, height, focus, setViewport, x, y, contentWidth, contentHeight])
   return null
 }
 
@@ -135,7 +136,7 @@ export function ArchitectureFlow({ id, label, nodes, edges, focus, children }: {
       onEdgeClick={(_, edge) => edge.data?.inspect()}
     >
       <Background id={id + '-grid'} variant={BackgroundVariant.Dots} gap={17} size={1} color="#4a4a58"/>
-      <FitVisibleGraph focus={focus} options={workspaceFit}/>
+      <FitVisibleGraph focus={focus} nodes={nodes}/>
       {children}
     </ReactFlow>
   )

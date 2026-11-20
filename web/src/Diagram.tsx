@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Box, Crosshair, FileCode2, Folder, GitFork, MessagesSquare, Minus, Plus, Search } from 'lucide-react'
+import { ArrowLeft, Box, Crosshair, FileCheck, FileCode2, Folder, GitFork, MessagesSquare, Minus, Plus, Search } from 'lucide-react'
 import { useReactFlow, useStore } from '@xyflow/react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { focusedStructure, repositoryStructure } from '@/lib/architecture'
+import { decisionStructure, focusedStructure, repositoryStructure } from '@/lib/architecture'
 import { ArchitectureFlow, componentConnection, componentNode, workspaceFit } from './ArchitectureFlow'
-import type { Edge, Evidence, Excerpt, Graph, Manifest, Node, Topic } from './api'
+import type { Claim, Edge, Evidence, Excerpt, Graph, Manifest, Node, Topic } from './api'
 
 function DiagramControls() {
   const { fitView, zoomIn, zoomOut } = useReactFlow()
@@ -36,7 +36,8 @@ function DiagramControls() {
   </div>
 }
 
-export function Diagram({ graph, manifest, anchor, selected, selectedEdge, excerpt, topic, onSelect, onSource, onEdge, onAnchor }: {
+export function Diagram({ graph, manifest, anchor, selected, selectedEdge, excerpt, topic, decision,
+  onSelect, onSource, onEdge, onAnchor, onDecision }: {
   graph: Graph
   manifest: Manifest | null
   anchor: string | null
@@ -44,12 +45,14 @@ export function Diagram({ graph, manifest, anchor, selected, selectedEdge, excer
   selectedEdge: Edge | null
   excerpt: Excerpt | null
   topic?: Topic
+  decision?: Claim
   onEdge: (edge: Edge) => void
   onSelect: (node: Node) => void
-  onSource: (source: Evidence) => void
+  onSource: (source: Evidence, keepDecision?: boolean) => void
   onAnchor: (id: string) => void
+  onDecision?: (claim: Claim) => void
 }) {
-  const [repositoryViewFor, setRepositoryViewFor] = useState<Excerpt | null | undefined>()
+  const [repositoryViewFor, setRepositoryViewFor] = useState<Claim | Excerpt | null>()
   const [directory, setDirectory] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [narrow, setNarrow] = useState(false)
@@ -67,9 +70,10 @@ export function Diagram({ graph, manifest, anchor, selected, selectedEdge, excer
     if (!term) return []
     return graph.nodes.filter(node => [node.label, node.path ?? ''].some(text => text.toLowerCase().includes(term))).slice(0, 12)
   }, [graph.nodes, search])
-  const focused = useMemo(() => focusedStructure(graph, excerpt, anchor, selected, topic, narrow),
-    [graph, excerpt, anchor, selected, topic, narrow])
-  const overview = repositoryViewFor === excerpt || !focused
+  const focused = useMemo(() => decision ? decisionStructure(graph, decision, narrow)
+    : focusedStructure(graph, excerpt, anchor, selected, topic, narrow), [graph, decision, excerpt, anchor, selected, topic, narrow])
+  const reference = decision ?? excerpt
+  const overview = repositoryViewFor === reference || !focused
   const structure = useMemo(() => overview ? repositoryStructure(graph, manifest, directory, narrow) : focused!,
     [overview, graph, manifest, directory, narrow, focused])
   const confirmed = new Set(graph.claims.filter(claim => claim.snapshotId === graph.snapshotId).map(claim => claim.targetId))
@@ -78,14 +82,16 @@ export function Diagram({ graph, manifest, anchor, selected, selectedEdge, excer
     subtitle: item.subtitle,
     role: item.role,
     icon: item.role === 'directory' ? Folder : item.role === 'source' ? FileCode2
-      : item.role === 'topic' ? MessagesSquare : Box,
-    active: item.role === 'focus' || item.role === 'source' && !overview,
+      : item.role === 'topic' ? MessagesSquare : item.role === 'decision' ? FileCheck : Box,
+    active: item.role === 'decision' || item.role === 'focus' || item.role === 'source' && !overview,
     confirmed: confirmed.has(item.id),
     inspect: () => {
       if (item.directory !== undefined) setDirectory(item.directory)
       else if (item.source) {
         setRepositoryViewFor(undefined)
-        onSource(item.source)
+        onSource(item.source, !overview && !!decision)
+      } else if (item.decision) {
+        onDecision?.(item.decision)
       } else if (item.node) onSelect(item.node)
     },
     center: item.node ? () => onAnchor(item.node!.id) : undefined,
@@ -97,9 +103,10 @@ export function Diagram({ graph, manifest, anchor, selected, selectedEdge, excer
     target: byId.get(link.target)!,
     label: byId.get(link.source)!.data.label + ' · ' + link.label + ' · ' + byId.get(link.target)!.data.label,
     origin: link.origin,
-    active: link.evidence === selectedEdge,
+    active: !!link.evidence && link.evidence === selectedEdge,
     inspect: () => {
-      if (link.evidence) onEdge(link.evidence)
+      if (link.decision) onDecision?.(link.decision)
+      else if (link.evidence) onEdge(link.evidence)
       else if (excerpt) onSource({ kind: 'source', path: excerpt.path,
         start: excerpt.highlight?.start ?? excerpt.lines[0]?.number, end: excerpt.highlight?.end })
     },
@@ -125,7 +132,7 @@ export function Diagram({ graph, manifest, anchor, selected, selectedEdge, excer
         <Button size="sm" variant={overview ? 'ghost' : 'secondary'} type="button" aria-pressed={!overview}
           disabled={!focused} onClick={() => setRepositoryViewFor(undefined)}>Focus</Button>
         <Button size="sm" variant={overview ? 'secondary' : 'ghost'} type="button" aria-pressed={overview}
-          onClick={() => { setDirectory(null); setRepositoryViewFor(excerpt) }}>Repository</Button>
+          onClick={() => { setDirectory(null); setRepositoryViewFor(reference) }}>Repository</Button>
       </div>
     </div>
     <div className="diagram-context">
@@ -135,13 +142,14 @@ export function Diagram({ graph, manifest, anchor, selected, selectedEdge, excer
     </div>
     {nodes.length ? <div className="canvas">
       <ArchitectureFlow id="review-architecture" label={overview ? 'Repository structure' : 'Evidence and related components'}
-        nodes={nodes} edges={edges} focus={graph.revision + ':' + overview + ':' + nodes.map(node => node.id).join(':')}>
+        nodes={nodes} edges={edges} focus={graph.revision + ':' + overview + ':' + narrow + ':' + nodes.map(node => node.id).join(':')}>
         <DiagramControls/>
         <div className="diagram-legend">
-          {structure.links.some(link => link.origin === 'citation') ? <span><i className="citation"/> Cited by topic</span> : <>
-            {structure.links.some(link => link.origin !== 'inferred') && <span><i className="observed"/> Recorded relationship</span>}
-            {structure.links.some(link => link.origin === 'inferred') && <span><i/> Inferred relationship</span>}
-          </>}
+          {structure.links.some(link => link.origin === 'citation') && <span><i className="citation"/> Cited by topic</span>}
+          {structure.links.some(link => link.origin === 'decision' || link.origin === 'interview') &&
+            <span><i className="confirmed"/> Confirmed in interview</span>}
+          {structure.links.some(link => link.origin === 'extracted') && <span><i className="observed"/> Recorded relationship</span>}
+          {structure.links.some(link => link.origin === 'inferred') && <span><i/> Inferred relationship</span>}
         </div>
       </ArchitectureFlow>
     </div> : <div className="panel-empty">
