@@ -164,7 +164,7 @@ class Snapshots:
         self.manifest(snapshot)
         return json.loads((self.location(snapshot) / "graph.json").read_text())
 
-    def source(self, snapshot: str, path: str, start: int, end: int | None = None) -> dict:
+    def source(self, snapshot: str, path: str, start: int, end: int | None = None, *, context: int = 0) -> dict:
         path = relative_path(path)
         manifest = self.manifest(snapshot)
         item = manifest["files"].get(path)
@@ -182,8 +182,43 @@ class Snapshots:
         return {
             "path": path, "commit": manifest["commit"],
             "url": f"https://github.com/{manifest['repo']}/blob/{manifest['commit']}/{quote(path)}#L{start}-L{end}",
-            "lines": [{"number": number, "text": lines[number - 1]} for number in range(start, end + 1)],
+            "highlight": {"start": start, "end": end},
+            "lines": [{"number": number, "text": lines[number - 1]}
+                      for number in range(max(1, start - context), min(len(lines), end + context) + 1)],
         }
+
+    def config_implementation(self, snapshot: str, citation: dict) -> dict | None:
+        if PurePosixPath(citation["path"]).name not in {".env.example", ".env.sample", ".env.template"}:
+            return None
+        highlight = citation["highlight"]
+        fallbacks = []
+        for line in citation["lines"]:
+            if not highlight["start"] <= line["number"] <= highlight["end"]:
+                continue
+            assignment = re.fullmatch(r"\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*([^#]{1,120})", line["text"])
+            if assignment and (value := assignment[2].strip().strip("\"'")):
+                fallbacks.append(re.compile(
+                    rf"\b(config|env)\s*\.\s*{assignment[1]}\s*(?:\|\||\?\?)\s*(['\"]){re.escape(value)}\2"
+                ))
+        if not fallbacks:
+            return None
+        root = self.location(snapshot) / "source"
+        remaining = 4 * 1024 * 1024
+        environment_lookup = None
+        for path, item in self.manifest(snapshot)["files"].items():
+            if item["structure"] != "parsed" or item["size"] > remaining:
+                continue
+            remaining -= item["size"]
+            for number, line in enumerate(read_source_lines(root / path), start=1):
+                for pattern in fallbacks:
+                    if match := pattern.search(line):
+                        if match[1] == "config":
+                            return self.source(snapshot, path, number, number, context=4)
+                        environment_lookup = environment_lookup or (path, number)
+        if environment_lookup:
+            path, number = environment_lookup
+            return self.source(snapshot, path, number, number, context=4)
+        return None
 
     def capture(self, repo: str, commit: str, scope: str) -> dict:
         snapshot = scan_id(repo, commit, scope)

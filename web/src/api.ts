@@ -114,7 +114,14 @@ export type Turn = {
   text: string
   purpose?: string
 }
-export type Excerpt = { url: string; commit: string; path: string; lines: { number: number; text: string }[] }
+export type Excerpt = {
+  url: string
+  commit: string
+  path: string
+  highlight: { start: number; end: number }
+  lines: { number: number; text: string }[]
+  implementation?: Excerpt
+}
 export type Scan = {
   id: string
   status: 'queued' | 'scanning' | 'analyzing' | 'ready' | 'partial' | 'failed'

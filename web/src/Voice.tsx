@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import type { IAgoraRTCClient, IMicrophoneAudioTrack } from 'agora-rtc-sdk-ng'
 import { LoaderCircle, Mic, PhoneOff } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { request } from './api'
 
 type Join = { appId: string; token: string; channel: string; uid: number; connectionId: string }
 
-export function Voice({ sessionId, token, disabled }: { sessionId: string; token: string; disabled: boolean }) {
-  const [available, setAvailable] = useState<boolean | null>(null)
+export function Voice({ sessionId, token, disabled, available, setAvailable }: {
+  sessionId: string
+  token: string
+  disabled: boolean
+  available: boolean | null
+  setAvailable: (available: boolean) => void
+}) {
   const [state, setState] = useState<'idle' | 'starting' | 'active' | 'stopping'>('idle')
   const [error, setError] = useState('')
   const joined = useRef<{ rtc?: IAgoraRTCClient; track?: IMicrophoneAudioTrack; info?: Join }>({})
@@ -27,16 +33,26 @@ export function Voice({ sessionId, token, disabled }: { sessionId: string; token
 
   useEffect(() => {
     mounted.current = true
-    void request<{ available: boolean }>('/voice/status').then(
-      config => { if (mounted.current) setAvailable(config.available) },
-      () => { if (mounted.current) setAvailable(false) },
-    )
-    return () => { mounted.current = false; void release().catch(() => undefined) }
-  }, [sessionId])
+    const controller = new AbortController()
+    let retry: number | undefined
 
-  useEffect(() => {
-    if (disabled) void release().catch(() => undefined)
-  }, [disabled])
+    async function checkAvailability() {
+      const config = await request<{ available: boolean }>('/voice/status', undefined, undefined, controller.signal)
+        .catch(() => ({ available: false }))
+      if (controller.signal.aborted) return
+      setAvailable(config.available)
+      if (!config.available) retry = window.setTimeout(() => void checkAvailability(), 4000)
+    }
+
+    if (!disabled) void checkAvailability()
+    return () => {
+      mounted.current = false
+      controller.abort()
+      window.clearTimeout(retry)
+      void release().catch(() => undefined)
+    }
+  }, [sessionId, disabled, setAvailable])
+
 
   async function start() {
     setState('starting'); setError('')
@@ -82,11 +98,14 @@ export function Voice({ sessionId, token, disabled }: { sessionId: string; token
     }
   }
 
-  if (disabled || available === null) return null
-  if (!available) return <p className="voice-status"><Mic size={15}/> Voice unavailable. You can continue in text.</p>
+  if (disabled) return null
+  if (available === null) return <p className="voice-status" role="status">
+    <LoaderCircle className="spin" size={15}/> Checking voice…
+  </p>
+  if (!available) return <p className="voice-status" role="status"><Mic size={15}/> Voice unavailable. You can continue in text.</p>
   return <div className="voice-controls">
-    {state === 'idle' ? <button className="quiet" onClick={() => void start()}><Mic size={16}/> Start voice</button>
-      : state === 'active' ? <button className="quiet" onClick={() => void stop()}><PhoneOff size={16}/> End voice</button>
+    {state === 'idle' ? <Button type="button" onClick={() => void start()}><Mic size={16}/> Start voice</Button>
+      : state === 'active' ? <Button type="button" variant="outline" onClick={() => void stop()}><PhoneOff size={16}/> End voice</Button>
       : <span className="voice-status"><LoaderCircle size={15} className="spin"/>{state === 'starting' ? 'Connecting voice…' : 'Closing voice…'}</span>}
     {state === 'active' && <span className="voice-status" role="status">Microphone live</span>}
     {error && <span className="voice-error" role="alert">{error}</span>}

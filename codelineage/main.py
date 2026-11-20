@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -127,9 +127,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return head(records, repo) | {"repo": repo}
 
     @app.get("/snapshots/{id_}/source")
-    def snapshot_source(id_: str, path: str, start: int = 1, end: int | None = None):
+    def snapshot_source(id_: str, path: str, start: int = 1, end: int | None = None,
+                        context: int = Query(default=0, ge=0, le=12), follow_config: bool = False):
         try:
-            return snapshots.source(id_, path, start, end)
+            excerpt = snapshots.source(id_, path, start, end, context=context)
+            if follow_config and (implementation := snapshots.config_implementation(id_, excerpt)):
+                excerpt["implementation"] = implementation
+            return excerpt
         except FileNotFoundError as exc:
             raise HTTPException(404, "Snapshot or source path not found.") from exc
         except ValueError as exc:

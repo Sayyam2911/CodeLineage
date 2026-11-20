@@ -11,7 +11,7 @@ import type { Edge, Excerpt, Graph, Node } from './api'
 type Positioned = { node: Node; x: number; y: number }
 
 function componentForExcerpt(graph: Graph, excerpt: Excerpt | null) {
-  const line = excerpt?.lines[0]?.number
+  const line = excerpt?.highlight?.start ?? excerpt?.lines[0]?.number
   if (!excerpt || line === undefined) return
   let preceding: Node | undefined
   for (const node of graph.nodes) {
@@ -26,7 +26,10 @@ function componentForExcerpt(graph: Graph, excerpt: Excerpt | null) {
 
 function layout(graph: Graph, anchor: string | null, selected: string | null, excerpt: Excerpt | null): Positioned[] {
   const nodes = new Map(graph.nodes.map(node => [node.id, node]))
-  const focus = nodes.get(anchor ?? '') ?? nodes.get(componentForExcerpt(graph, excerpt) ?? '') ?? graph.nodes[0]
+  const anchored = nodes.get(anchor ?? '')
+  const focus = excerpt
+    ? (anchored?.path === excerpt.path ? anchored : nodes.get(componentForExcerpt(graph, excerpt) ?? ''))
+    : anchored ?? graph.nodes[0]
   if (!focus) return []
   const neighbors = (edges: Edge[], key: 'source' | 'target', other: 'source' | 'target') =>
     [...new Set(edges.filter(edge => edge[key] === focus.id && edge[other] !== focus.id).map(edge => edge[other]))]
@@ -38,7 +41,9 @@ function layout(graph: Graph, anchor: string | null, selected: string | null, ex
   const used = new Set([focus.id, ...incoming.map(node => node.id), ...outgoing.map(node => node.id)])
   const sameFile = graph.nodes.filter(node => node.path === focus.path && !used.has(node.id)).slice(0, 4)
   const sides = [incoming, outgoing]
-  if (sides.every(side => !side.length)) sides[1] = sameFile.length ? sameFile : graph.nodes.filter(node => !used.has(node.id)).slice(0, 4)
+  if (sides.every(side => !side.length)) {
+    sides[1] = !sameFile.length && !excerpt ? graph.nodes.filter(node => !used.has(node.id)).slice(0, 4) : sameFile
+  }
   const visible = new Set([focus.id, ...sides.flat().map(node => node.id)])
   const latest = graph.claims.find(claim => claim.snapshotId === graph.snapshotId && claim.revision === graph.revision)
   const additional = [...new Set([selected, latest?.relatedId])]
@@ -104,7 +109,6 @@ export function Diagram({ graph, anchor, selected, selectedEdge, excerpt, onSele
     return graph.edges.filter(edge => edge.source !== edge.target && visible.has(edge.source) && visible.has(edge.target))
   }, [graph.edges, positioned])
   const focus = positioned[0]?.node.id
-  if (!focus) return <div className="panel-empty"><GitFork size={25}/><p>No structural symbols in this scope. Source files are still available.</p></div>
   const confirmed = new Set(graph.claims.filter(claim => claim.snapshotId === graph.snapshotId).map(claim => claim.targetId))
   const nodes = positioned.map(({ node, x, y }) => componentNode(node.id, { x, y }, {
     label: node.label,
@@ -140,12 +144,15 @@ export function Diagram({ graph, anchor, selected, selectedEdge, excerpt, onSele
       </div>}
       <span>{graph.nodes.length.toLocaleString()} components</span>
     </div>
-    <div className="canvas">
+    {focus ? <div className="canvas">
       <ArchitectureFlow id="review-architecture" label="Directed architecture diagram"
         nodes={nodes} edges={edges} focus={graph.revision + ':' + focus}>
         <DiagramControls center={selected ? () => onAnchor(selected) : undefined}/>
         <div className="diagram-legend"><span><Box size={13} aria-hidden="true"/> Extracted component</span><span><i/> Inferred connection</span></div>
       </ArchitectureFlow>
-    </div>
+    </div> : <div className="panel-empty">
+      <GitFork size={25} aria-hidden="true"/>
+      <p>{excerpt ? 'No extracted component covers this source excerpt.' : 'No structural symbols in this scope.'}</p>
+    </div>}
   </div>
 }

@@ -22,7 +22,10 @@ def test_scan_uses_real_graphify_and_keeps_unparsed_source(tmp_path, monkeypatch
     def fixture(_repo, _commit, destination):
         write_tar(destination, {
             "app.py": "def answer():\n    return 42\n",
-            "client.ts": "export function render() { return 'ok'; }\n",
+            "check.ts": "export const service = process.env.BASE_URL || 'https://example.org';\n",
+            "client.ts": "export function render(config: { MODEL?: string }) {\n"
+                         "  return config.MODEL || 'default-model';\n}\n",
+            ".env.example": "BASE_URL=https://example.org\nMODEL=default-model\n# Other settings\n",
             "notes.custom": "Reference behavior is documented here.\n",
         })
 
@@ -38,12 +41,20 @@ def test_scan_uses_real_graphify_and_keeps_unparsed_source(tmp_path, monkeypatch
                 break
             time.sleep(0.05)
         assert scan["status"] == "ready", scan
-        assert scan["coverage"] == {"parsed": 2, "unparsed": 1}
+        assert scan["coverage"] == {"parsed": 3, "unparsed": 2}
         snapshot = f"/snapshots/{scan['snapshotId']}"
         graph = client.get(snapshot + "/graph").json()
         assert any(n["label"] == "answer()" and n["path"] == "app.py" for n in graph["nodes"]), graph
         excerpt = client.get(snapshot + "/source", params={"path": "notes.custom", "start": 1, "end": 1})
         assert excerpt.json()["lines"][0]["text"].startswith("Reference behavior")
+        citation = client.get(snapshot + "/source", params={
+            "path": ".env.example", "start": 1, "end": 2, "context": 4, "follow_config": True,
+        }).json()
+        assert citation["url"].endswith(".env.example#L1-L2")
+        assert citation["highlight"] == {"start": 1, "end": 2}
+        assert [row["number"] for row in citation["lines"]] == [1, 2, 3]
+        assert citation["implementation"]["url"].endswith("client.ts#L2-L2")
+        assert citation["implementation"]["lines"][1]["text"] == "  return config.MODEL || 'default-model';"
         assert client.get(snapshot + "/source", params={"path": "../outside", "start": 1, "end": 1}).status_code == 422
         repeat = client.post("/scans", json=payload)
         assert repeat.status_code == 200 and repeat.json()["reused"]

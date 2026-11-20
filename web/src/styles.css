@@ -373,7 +373,8 @@
 .code-meta { display: flex; justify-content: space-between; align-items: center; gap: 6px; min-height: 32px; padding-inline: 9px; font-size: 11px; color: #b9c0d2; }
 .code-meta code { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .code-scroll { max-height: 260px; overflow: auto; border-top: 1px solid #2a2d38; font: 11px/1.72 ui-monospace, monospace; }
-.code-row { display: grid; grid-template-columns: 39px minmax(0, 1fr); background: #1e2635; color: #dfe5f1; }
+.code-row { display: grid; grid-template-columns: 39px minmax(0, 1fr); color: #c0c7d6; }
+.code-row.cited { background: #253249; color: #f0f4fc; }
 .code-row span { padding-inline-end: 7px; text-align: end; background: #1a1e29; color: #aeb7cc; user-select: none; font-variant-numeric: tabular-nums; }
 .code-row code { padding: 0 7px; white-space: break-spaces; overflow-wrap: anywhere; }
 .attribution { margin: 11px; padding: 12px; border: 1px solid #373d4c; background: #1a1e28; border-radius: 7px; }
@@ -408,11 +409,9 @@
 .transcript { display: grid; gap: 8px; max-height: 234px; overflow: auto; }
 .transcript li { padding: 7px; border-bottom: 1px solid var(--border); font-size: 13px; }
 .transcript p { margin-top: 4px; color: #c0c5d4; white-space: pre-wrap; overflow-wrap: anywhere; }
-.voice-strip:not(:empty) { padding: 8px 13px; border-bottom: 1px solid var(--border); }
-.voice-controls, .voice-status, .voice-controls button { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: var(--muted-foreground); font-size: 12px; }
-.voice-controls button { padding: 4px 7px; border: 1px solid var(--input); border-radius: 6px; }
-.voice-controls button:hover { background: var(--accent); }
-.voice-error { color: var(--destructive); }
+.voice-strip:not(:empty) { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 13px; border-bottom: 1px solid var(--border); }
+.voice-controls, .voice-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted-foreground); font-size: 12px; }
+.voice-error { color: var(--destructive); font-size: 12px; }
 .spin { animation: spin 1s linear infinite; }
 
 @media (max-width: 840px) {

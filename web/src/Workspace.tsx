@@ -18,7 +18,7 @@ import { Diagram } from './Diagram'
 import { ClaimEntry, Coverage, EvidenceLinks, PriorReview, ReviewTopics } from './Review'
 import { Voice } from './Voice'
 import { query, request } from './api'
-import type { Analysis, Context, Edge, Evidence, Excerpt, Graph, Manifest, Node, Review, Revision, Session, SessionEvent, Turn } from './api'
+import type { Analysis, Context, Edge, Evidence, Excerpt, Graph, Manifest, Node, Review, Revision, Session, SessionEvent, Topic, Turn } from './api'
 
 type Operation = 'annotate' | 'add_component' | 'add_connection'
 
@@ -37,7 +37,7 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
   const [sourceError, setSourceError] = useState('')
   const [sourceLoading, setSourceLoading] = useState(false)
   const [sourceSnapshot, setSourceSnapshot] = useState(initial.snapshotId)
-  const latestEvidence = useRef<Evidence | null>(null)
+  const latestEvidence = useRef<{ ref: Evidence; followConfig: boolean } | null>(null)
   const sourceRequest = useRef<AbortController | null>(null)
   const [anchor, setAnchor] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -45,6 +45,8 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
   const [first, setFirst] = useState(1)
   const [last, setLast] = useState<number | ''>('')
   const [input, setInput] = useState('')
+  const [voiceAvailable, setVoiceAvailable] = useState<boolean | null>(null)
+  const [textOpen, setTextOpen] = useState(false)
   const [operation, setOperation] = useState<Operation>('annotate')
   const [changeLabel, setChangeLabel] = useState('')
   const [related, setRelated] = useState('')
@@ -66,22 +68,25 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
   const snapshot = '/snapshots/' + session.snapshotId
   const topic = session.topics[session.index]
   const interview = session.mode === 'update'
+  const topicSource = topic?.evidence.find(item => item.kind === 'source')
+  const textVisible = textOpen || voiceAvailable === false
 
   useEffect(() => {
     window.scrollTo(0, 0)
     heading.current?.focus({ preventScroll: true })
   }, [])
 
-  async function showEvidence(ref: Evidence) {
+  async function showEvidence(ref: Evidence, followConfig = false) {
     sourceRequest.current?.abort()
     const controller = new AbortController()
     sourceRequest.current = controller
     const requestId = ++sourceSequence.current
-    latestEvidence.current = ref
+    latestEvidence.current = { ref, followConfig }
     setSourceError('')
+    setExcerpt(null)
     setEvidenceNote(ref.kind !== 'source' ? ref : null)
     if (ref.kind !== 'source' || !ref.path || !ref.start) {
-      setExcerpt(null); setSourceLoading(false)
+      setSourceLoading(false)
       return
     }
     const evidenceSnapshot = ref.snapshotId ?? session.snapshotId
@@ -91,8 +96,15 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
     try {
       const data = await request<Excerpt>(query('/snapshots/' + evidenceSnapshot + '/source', {
         path: ref.path, start: ref.start, ...(ref.end ? { end: ref.end } : {}),
+        ...(ref.end ? { context: 4 } : {}), ...(followConfig ? { follow_config: true } : {}),
       }), undefined, undefined, controller.signal)
-      if (requestId === sourceSequence.current) setExcerpt(data)
+      if (requestId === sourceSequence.current) {
+        const displayed = data.implementation ?? data
+        setExcerpt(displayed)
+        if (data.implementation) {
+          setFile(displayed.path); setFirst(displayed.highlight.start); setLast(displayed.highlight.end)
+        }
+      }
     } catch (reason) {
       if (!controller.signal.aborted && requestId === sourceSequence.current) setSourceError((reason as Error).message)
     } finally {
@@ -111,12 +123,16 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
       .sort((left, right) => left.seq - right.seq))
   }
 
-  function focusTopic(active: typeof topic) {
-    if (!active) return
+  function showTopicEvidence(active: Topic, ref: Evidence, followConfig = true) {
     setAnchor(active.targetId); setSelected(active.targetId); setActiveEdge(null)
+    void showEvidence(ref, followConfig)
+  }
+
+  function focusTopic(active: Topic | undefined) {
+    if (!active) return
     setOperation('annotate'); setChangeLabel(''); setRelated(''); setScopes(''); setSupersedes(''); setExceptionTo('')
-    const ref = active.evidence.find(item => item.kind === 'source')
-    if (ref) void showEvidence(ref)
+    const ref = active.evidence.find(item => item.kind === 'source') ?? active.evidence[0]
+    if (ref) showTopicEvidence(active, ref)
   }
 
   async function loadGraph(revision: number) {
@@ -304,6 +320,7 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
   function openSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!file) return
+    setAnchor(null); setSelected(null); setActiveEdge(null)
     void showEvidence({ kind: 'source', path: file, start: first, end: last || undefined, snapshotId: sourceSnapshot })
   }
 
@@ -391,6 +408,9 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
               <header className="panel-heading">
                 <Code2 aria-hidden="true" size={17}/>
                 <h2 id="source-title">Source evidence</h2>
+                {topic && topicSource && !receipt && !session.finished &&
+                  <Button type="button" variant="ghost" size="sm"
+                    onClick={() => showTopicEvidence(topic, topicSource)}>Current topic</Button>}
                 {excerpt && <Button asChild variant="ghost" size="icon-sm">
                   <a href={excerpt.url} target="_blank" rel="noreferrer" title="Open pinned lines on GitHub" aria-label="Open pinned lines on GitHub">
                     <ArrowUpRight aria-hidden="true"/>
@@ -443,7 +463,8 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                 ? <div className="panel-empty">
                     <CircleAlert aria-hidden="true" size={21}/><p>{sourceError}</p>
                     <Button type="button" size="sm" variant="outline" onClick={() => {
-                      if (latestEvidence.current) void showEvidence(latestEvidence.current)
+                      const request = latestEvidence.current
+                      if (request) void showEvidence(request.ref, request.followConfig)
                     }}>Retry evidence</Button>
                   </div>
                 : evidenceNote
@@ -463,7 +484,10 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                           </Badge>
                         </div>
                         <div className="code-scroll" role="region" aria-label="Pinned source lines" tabIndex={0}>
-                          {excerpt.lines.map(line => <div className="code-row" key={line.number}>
+                          {excerpt.lines.map(line => <div className={
+                            !excerpt.highlight || (line.number >= excerpt.highlight.start && line.number <= excerpt.highlight.end)
+                              ? 'code-row cited' : 'code-row'
+                          } key={line.number}>
                             <span>{line.number}</span><code>{line.text || ' '}</code>
                           </div>)}
                         </div>
@@ -489,7 +513,13 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                 </TabsList>}
               </header>
               <div className="voice-strip">
-                <Voice sessionId={session.id} token={session.token} disabled={session.finished}/>
+                <Voice sessionId={session.id} token={session.token} disabled={session.finished}
+                  available={voiceAvailable} setAvailable={setVoiceAvailable}/>
+                {!session.finished && (!interview || (topic && !receipt)) && voiceAvailable !== false &&
+                  <Button type="button" variant="ghost" size="sm" aria-expanded={textVisible} aria-controls="text-conversation"
+                    onClick={() => setTextOpen(open => !open)}>
+                    {textOpen ? 'Hide text' : 'Type instead'}
+                  </Button>}
               </div>
               <TabsContent value="conversation" className="conversation-body">
                 {error && <Alert variant="destructive" className="inline-notice">
@@ -511,7 +541,7 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                 )}
                 {interview && !session.finished && topic && !receipt && <article className="topic">
                   <h3>{topic.question}</h3><p>{topic.statement}</p>
-                  <EvidenceLinks items={topic.evidence} onOpen={ref => void showEvidence(ref)}/>
+                  <EvidenceLinks items={topic.evidence} onOpen={ref => showTopicEvidence(topic, ref, false)}/>
                 </article>}
                 {interview && !session.finished && !topic && <p className="subtle">There are no remaining interview topics for this scan.</p>}
                 {session.pending && (
@@ -599,12 +629,12 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                   </Collapsible>
                 )}
 
-                {!session.finished && (!interview || (topic && !receipt)) && (
-                  <form className="composer" onSubmit={send} aria-busy={!!busy}>
+                {textVisible && !session.finished && (!interview || (topic && !receipt)) && (
+                  <form id="text-conversation" className="composer" onSubmit={send} aria-busy={!!busy}>
                     <Label htmlFor="conversation-entry" className="sr-only">{interview ? 'Interview answer' : 'Question'}</Label>
                     <Textarea id="conversation-entry" name="message" rows={2} value={input}
                       placeholder={interview ? session.pending ? 'Type a correction…' : 'Type your answer…' : 'Ask how this code works…'}
-                      onChange={event => setInput(event.target.value)}
+                      onChange={event => { setInput(event.target.value); setTextOpen(true) }}
                       onKeyDown={event => {
                         if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                           event.preventDefault()
