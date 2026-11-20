@@ -29,22 +29,28 @@ Set `CODELINEAGE_TEST_NEO4J_URI` for the Neo4j integration test. For a disposabl
 
 ## Semantic analysis and voice
 
-Local development defaults to offline, structural interview topics. Set `CODELINEAGE_ANALYSIS_KEY` to enable the OpenAI analysis of public source excerpts. `CODELINEAGE_ANALYSIS_MODEL` defaults to `gpt-4o-mini`. `CODELINEAGE_ANALYSIS_BATCHES` defaults to 40 bounded requests. The scan reports partial semantic coverage when that budget is exhausted, and inference citations must match the pinned source.
+Local development defaults to structural interview topics. Copy [`.env.example`](.env.example) to `.env` for semantic analysis and voice, then start the service with the environment file.
 
-To start a live voice session, configure the following on the server and make the service reachable at its HTTPS URL.
+~~~sh
+uv run --locked --env-file .env uvicorn codelineage.main:app --host 127.0.0.1 --port 8000
+~~~
+
+Set `CODELINEAGE_ANALYSIS_PROVIDER=meta` and put your Meta Model API key in `CODELINEAGE_ANALYSIS_KEY`. CodeLineage sends public source excerpts to the Responses API using `muse-spark-1.3-contributor`. Meta may use Contributor inputs for model training. Use public demo source without sensitive or personal data. For OpenAI, set the provider to `openai` and supply its key. You can override either default model with `CODELINEAGE_ANALYSIS_MODEL`. The default analysis budget is 40 batches. Results report partial coverage at the budget limit, and inference citations must match the pinned source. [Meta Model API](https://dev.meta.ai/docs/muse-spark)
+
+In Agora AI Studio, publish an agent with Murf Falcon selected as text-to-speech. Copy its Pipeline ID and use the App ID and App Certificate from the same project. Keep the certificate and API keys on the server. The browser can use localhost for microphone access. Agora needs a reachable HTTPS endpoint for `POST /voice/tools/...`.
 
 | Variable | Purpose |
 | --- | --- |
 | `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE` | Agora project with Conversational AI enabled and token signing |
-| `MURF_API_KEY`, `MURF_VOICE_ID` | Project-owned Murf key and Falcon-compatible voice |
+| `AGORA_PIPELINE_ID` | Published Studio pipeline with Murf Falcon. CodeLineage adds its interview instructions and tools to each session. |
 | `CODELINEAGE_PUBLIC_URL` | HTTPS base URL that Agora can call for tools |
-| `MURF_MODEL` | Optional model override, defaults to `FALCON` |
-| `DEEPGRAM_API_KEY` | Optional key for bring-your-own Deepgram credentials |
-| `CODELINEAGE_VOICE_MODEL`, `CODELINEAGE_VOICE_MODEL_KEY` | Optional OpenAI voice-turn model and provider key, otherwise Agora-managed `gpt-4o-mini` |
+| `MURF_API_KEY`, `MURF_VOICE_ID` | Used for direct provider configuration when `AGORA_PIPELINE_ID` is empty |
+| `MURF_MODEL`, `DEEPGRAM_API_KEY` | Optional direct provider settings. The Murf model defaults to `FALCON`. |
+| `CODELINEAGE_VOICE_MODEL`, `CODELINEAGE_VOICE_MODEL_KEY` | Optional direct OpenAI voice-turn settings. The default is Agora-managed `gpt-4o-mini`. |
 
 The browser publishes microphone audio to Agora. The server issues expiring RTC tokens and separate, session-bound tool credentials. Agora can open evidence and propose an interview change using a participant utterance from the provider history. The browser displays the exact summary for explicit approval. Spoken approval remains pending verification of provider delivery and assent. The voice agent checks the stored receipt before saying an edit was saved. Use the typed flow if voice is unavailable.
 
-Voice lifecycle and token usage follow the [official Agora Python quickstart](https://github.com/AgoraIO-Conversational-AI/agent-quickstart-python/tree/bd1af724bed885c39a5a57235b37ec3bb3fd6396). Live Agora, Murf and microphone acceptance requires a configured project and a real user session.
+In a review or lineage session, select **Start voice** and allow microphone access. Ask why Healthchecks orders delivery and follow up by asking to see the source. Select **End voice** when you finish. [Agora Studio connection guide](https://docs.agora.io/en/ai/studio/deploy/connect-agent) · [Agora Python quickstart](https://github.com/AgoraIO-Conversational-AI/agent-quickstart-python/tree/bd1af724bed885c39a5a57235b37ec3bb3fd6396)
 
 ## Managed deployment
 

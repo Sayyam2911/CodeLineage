@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -31,6 +33,44 @@ def test_agora_sdk_config_limits_tools_by_mode(monkeypatch):
         assert agent.tts["params"]["model"] == "FALCON"
 
 
+def test_published_pipeline_inherits_providers_and_uses_agent_auth(monkeypatch):
+    for name, value in {
+        "AGORA_APP_ID": "1" * 32, "AGORA_APP_CERTIFICATE": "2" * 32,
+        "AGORA_PIPELINE_ID": "published-pipeline", "CODELINEAGE_PUBLIC_URL": "https://example.com",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("MURF_API_KEY", raising=False)
+    monkeypatch.delenv("MURF_VOICE_ID", raising=False)
+    voice = AgoraVoice()
+    assert voice.available()
+    connection = {"channel": "speech-room", "uid": 100001, "agentUid": 900001}
+
+    def start(app_id, *, name, pipeline_id, properties, request_options):
+        assert app_id == "1" * 32 and name == connection["channel"]
+        assert pipeline_id == "published-pipeline"
+        assert "asr" not in properties and "tts" not in properties
+        assert properties["agent_rtc_uid"] == "900001" and properties["remote_rtc_uids"] == ["100001"]
+        assert request_options["additional_headers"]["Authorization"] == "agora token=" + properties["token"]
+        tools = properties["llm"]["tools"]
+        assert {item["function"]["name"] for item in tools} == {"getDecisionContext", "showEvidence"}
+        assert tools[0]["server"]["headers"]["Authorization"] == "Bearer tool-token"
+        return SimpleNamespace(agent_id="running-agent")
+
+    def authorized(app_id, agent_id, *, request_options):
+        assert app_id == "1" * 32 and agent_id == "running-agent"
+        assert request_options["additional_headers"]["Authorization"].startswith("agora token=007")
+
+    def history(*args, **kwargs):
+        authorized(*args, **kwargs)
+        return SimpleNamespace(contents=[SimpleNamespace(role="user", content="Webhook retries are limited.")])
+
+    voice.client = SimpleNamespace(agents=SimpleNamespace(start=start, get_history=history, stop=authorized))
+    session = {"mode": "understand", "id": "session"}
+    connection["agentId"] = voice.start(session, connection, "tool-token")
+    assert voice.last_participant(connection) == "Webhook retries are limited."
+    voice.stop(connection)
+
+
 def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
     snapshots = Snapshots(tmp_path / "snapshots")
     database = Database(tmp_path / "lineage.db")
@@ -53,12 +93,13 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
             return "provider-agent"
 
         @staticmethod
-        def last_participant(_agent):
+        def last_participant(connection):
+            assert connection["agentId"] == "provider-agent"
             return "We retry webhook errors once."
 
         @staticmethod
-        def stop(_agent):
-            pass
+        def stop(connection):
+            assert connection["agentId"] == "provider-agent"
 
     app = FastAPI()
     app.include_router(interview_routes(service))

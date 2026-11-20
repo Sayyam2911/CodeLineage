@@ -1,5 +1,6 @@
 """Agora RTC and HTTPS tool integration, adapted from Agora's Python quickstart."""
 
+import logging
 import os
 import secrets
 import time
@@ -9,13 +10,18 @@ from agora_agent import Agora, Area
 from agora_agent.agentkit import Agent
 from agora_agent.agentkit.token import generate_convo_ai_token
 from agora_agent.agentkit.vendors import DeepgramSTT, MurfTTS, OpenAI
+from agora_agent.core.api_error import ApiError
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from codelineage.interview import Answer, Interviews, event, token_digest
 
 VOICE_SECONDS = 1800
-VOICE_ENV = ("AGORA_APP_ID", "AGORA_APP_CERTIFICATE", "MURF_API_KEY", "MURF_VOICE_ID", "CODELINEAGE_PUBLIC_URL")
+VOICE_ENV = ("AGORA_APP_ID", "AGORA_APP_CERTIFICATE", "CODELINEAGE_PUBLIC_URL")
+GREETING = "Let's explore the decisions behind this repository."
+PARAMETERS = {"data_channel": "rtm", "audio_scenario": "chorus"}
+FEATURES = {"enable_rtm": True, "enable_tools": True}
+logger = logging.getLogger(__name__)
 
 
 def tool(name, description, url, token, fields):
@@ -44,21 +50,27 @@ class AgoraVoice:
     def available() -> bool:
         if not all(os.getenv(name) for name in VOICE_ENV):
             return False
+        if not os.getenv("AGORA_PIPELINE_ID") and not (os.getenv("MURF_API_KEY") and os.getenv("MURF_VOICE_ID")):
+            return False
         address = urlsplit(os.environ["CODELINEAGE_PUBLIC_URL"])
         return address.scheme == "https" and bool(address.hostname) and not (
             address.username or address.password or address.query or address.fragment
         )
 
     @staticmethod
-    def rtc(connection) -> dict:
-        app_id = os.environ["AGORA_APP_ID"]
-        return {"appId": app_id, "channel": connection["channel"], "uid": connection["uid"],
-                "connectionId": connection["id"], "token": generate_convo_ai_token(
-                    app_id=app_id, app_certificate=os.environ["AGORA_APP_CERTIFICATE"],
-                    channel_name=connection["channel"], uid=connection["uid"], token_expire=VOICE_SECONDS,
-                )}
+    def token(connection: dict, uid: int) -> str:
+        return generate_convo_ai_token(
+            app_id=os.environ["AGORA_APP_ID"], app_certificate=os.environ["AGORA_APP_CERTIFICATE"],
+            channel_name=connection["channel"], uid=uid, token_expire=VOICE_SECONDS,
+        )
 
-    def agent(self, session: dict, tool_token: str) -> Agent:
+    @classmethod
+    def rtc(cls, connection: dict) -> dict:
+        return {"appId": os.environ["AGORA_APP_ID"], "channel": connection["channel"], "uid": connection["uid"],
+                "connectionId": connection["id"], "token": cls.token(connection, connection["uid"])}
+
+    @staticmethod
+    def conversation(session: dict, tool_token: str) -> tuple[str, list[dict]]:
         base = os.environ["CODELINEAGE_PUBLIC_URL"].rstrip("/") + "/voice/tools/" + session["id"]
         tools = [
             tool("getDecisionContext", "Look up the current topic or answer from reviewed lineage and pinned evidence.",
@@ -87,13 +99,15 @@ class AgoraVoice:
             )
         else:
             instructions += "This is a read-only session. Use showEvidence to focus the browser on relevant source."
+        return instructions, tools
+
+    def agent(self, session: dict, tool_token: str) -> Agent:
+        instructions, tools = self.conversation(session, tool_token)
         llm_args = {}
         if key := os.getenv("CODELINEAGE_VOICE_MODEL_KEY"):
             llm_args = {"api_key": key, "base_url": "https://api.openai.com/v1/chat/completions"}
         return (Agent(client=self.client, instructions=instructions,
-                      greeting="Let's explore the decisions behind this repository.",
-                      parameters={"data_channel": "rtm", "audio_scenario": "chorus"},
-                      advanced_features={"enable_rtm": True, "enable_tools": True},
+                      greeting=GREETING, parameters=PARAMETERS, advanced_features=FEATURES,
                       turn_detection={"config": {
                           "speech_threshold": 0.5,
                           "start_of_speech": {"mode": "vad", "vad_config": {"interrupt_duration_ms": 160}},
@@ -106,6 +120,23 @@ class AgoraVoice:
                                   model=os.getenv("MURF_MODEL", "FALCON"))))
 
     def start(self, session: dict, connection: dict, tool_token: str) -> str:
+        if pipeline_id := os.getenv("AGORA_PIPELINE_ID"):
+            instructions, tools = self.conversation(session, tool_token)
+            auth_token = self.token(connection, connection["agentUid"])
+            # Inherit the Studio ASR, LLM credentials, and Murf configuration.
+            response = self.client.agents.start(
+                os.environ["AGORA_APP_ID"], name=connection["channel"], pipeline_id=pipeline_id,
+                properties={
+                    "channel": connection["channel"], "token": auth_token,
+                    "agent_rtc_uid": str(connection["agentUid"]), "remote_rtc_uids": [str(connection["uid"])],
+                    "enable_string_uid": False, "idle_timeout": 60,
+                    "parameters": PARAMETERS, "advanced_features": FEATURES,
+                    "llm": {"system_messages": [{"role": "system", "content": instructions}],
+                            "greeting_message": GREETING, "max_history": 40, "tools": tools},
+                },
+                request_options={"additional_headers": {"Authorization": f"agora token={auth_token}"}},
+            )
+            return response.agent_id
         call = self.agent(session, tool_token).create_session(
             channel=connection["channel"], agent_uid=str(connection["agentUid"]),
             remote_uids=[str(connection["uid"])], enable_string_uid=False,
@@ -113,11 +144,21 @@ class AgoraVoice:
         )
         return call.start()
 
-    def stop(self, agent_id: str) -> None:
-        self.client.agents.stop(os.environ["AGORA_APP_ID"], agent_id)
+    def request_options(self, connection: dict) -> dict:
+        token = self.token(connection, connection["agentUid"])
+        return {"additional_headers": {"Authorization": f"agora token={token}"}}
 
-    def last_participant(self, agent_id: str) -> str:
-        history = self.client.agents.get_history(os.environ["AGORA_APP_ID"], agent_id)
+    def stop(self, connection: dict) -> None:
+        try:
+            self.client.agents.stop(os.environ["AGORA_APP_ID"], connection["agentId"],
+                                    request_options=self.request_options(connection))
+        except ApiError as exc:
+            if exc.status_code != 404:
+                raise
+
+    def last_participant(self, connection: dict) -> str:
+        history = self.client.agents.get_history(os.environ["AGORA_APP_ID"], connection["agentId"],
+                                                 request_options=self.request_options(connection))
         for message in reversed(history.contents or []):
             if message.role == "user" and message.content:
                 return message.content.strip()[:4000]
@@ -182,7 +223,10 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
         try:
             provider = gateway()
             agent_id = provider.start(session, connection, tool_token)
+            if not agent_id:
+                raise RuntimeError("Agora did not return an agent ID.")
         except Exception as exc:
+            logger.warning("Agora start failed (%s).", getattr(exc, "status_code", type(exc).__name__))
             with database.transaction(write=True) as records:
                 current = records.get("voice", session_id)
                 if current and current["id"] == connection["id"]:
@@ -194,7 +238,7 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
             if still_waiting:
                 records.put("voice", session_id, active | {"state": "active", "agentId": agent_id})
         if not still_waiting:
-            provider.stop(agent_id)
+            provider.stop(connection | {"agentId": agent_id})
             raise HTTPException(409, "The voice connection was cancelled before it started.")
         return {"active": True}
 
@@ -206,9 +250,9 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
             if not connection or connection["id"] != body.connectionId:
                 return {"active": False}
             records.put("voice", session_id, connection | {"state": "closed", "toolHash": ""})
-        if agent_id := connection.get("agentId"):
+        if connection.get("agentId"):
             try:
-                gateway().stop(agent_id)
+                gateway().stop(connection)
             except Exception as exc:
                 raise HTTPException(502, "Voice tools were closed. Agora has not acknowledged the stop request.") from exc
         return {"active": False}
@@ -256,7 +300,7 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
         if not connection.get("agentId"):
             raise HTTPException(409, "The Agora agent is still starting.")
         try:
-            answer = gateway().last_participant(connection["agentId"])
+            answer = gateway().last_participant(connection)
         except HTTPException:
             raise
         except Exception as exc:
