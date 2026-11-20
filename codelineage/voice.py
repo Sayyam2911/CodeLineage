@@ -1,5 +1,6 @@
 """Agora RTC and HTTPS tool integration, adapted from Agora's Python quickstart."""
 
+import json
 import logging
 import os
 import secrets
@@ -11,7 +12,7 @@ from agora_agent.agentkit import Agent
 from agora_agent.agentkit.token import generate_convo_ai_token
 from agora_agent.agentkit.vendors import DeepgramSTT, MurfTTS, OpenAI
 from agora_agent.core.api_error import ApiError
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from codelineage.interview import Answer, Interviews, event, token_digest
@@ -165,13 +166,81 @@ class AgoraVoice:
             if exc.status_code != 404:
                 raise
 
-    def last_participant(self, connection: dict) -> str:
+    def history(self, connection: dict) -> list:
         history = self.client.agents.get_history(os.environ["AGORA_APP_ID"], connection["agentId"],
                                                  request_options=self.request_options(connection))
-        for message in reversed(history.contents or []):
+        return history.contents or []
+
+    def last_participant(self, connection: dict) -> str:
+        for message in reversed(self.history(connection)):
             if message.role == "user" and message.content:
                 return message.content.strip()[:4000]
         raise HTTPException(409, "No participant answer was found in the Agora session.")
+
+    def speak(self, connection: dict, text: str) -> None:
+        self.client.agents.speak(
+            os.environ["AGORA_APP_ID"], connection["agentId"],
+            text=text.encode()[:512].decode(errors="ignore"), priority="INTERRUPT",
+            interruptable=True, request_options=self.request_options(connection),
+        )
+
+
+def stalled_lookup_turn(messages: list) -> str | None:
+    lookups = 0
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.role == "assistant" and message.content:
+            return None
+        if message.role == "user":
+            return token_digest(f"{index}:{message.content}") if lookups >= 2 and message.content else None
+        if message.role == "tool" and message.content:
+            try:
+                result = json.loads(message.content)
+            except ValueError:
+                continue
+            if isinstance(result, dict) and "topic" in result and "findings" in result:
+                lookups += 1
+    return None
+
+
+def speak_stalled_lookup(gateway, interviews: Interviews, session_id: str, connection: dict, result: dict):
+    try:
+        provider = gateway()
+        turn_id = stalled_lookup_turn(provider.history(connection))
+        if not turn_id:
+            return
+        with interviews.database.transaction(write=True) as records:
+            active = records.get("voice", session_id)
+            if (not active or active["id"] != connection["id"] or active["state"] != "active"
+                    or active["expiresAt"] <= time.time() or active.get("spokenLookupTurn") == turn_id):
+                return
+            records.put("voice", session_id, active | {"spokenLookupTurn": turn_id})
+
+        item = next(iter(result["claims"]), None) or result["topic"] or next(iter(result["findings"]), None)
+        if item:
+            source = next((item for item in item["evidence"] if item["kind"] == "source"), None)
+            reply = item["statement"][:280].strip().rstrip(".") + "."
+            if item["origin"] == "inference":
+                reply = "The scan suggests this: " + reply
+            if source:
+                reply += f" See {source['path'][:120]}, line {source['start']}."
+            if not result["claims"]:
+                reply += " The rationale is still open."
+        else:
+            source = None
+            reply = "The rationale is still open. Which component or file should we look at?"
+        provider.speak(connection, reply)
+
+        if source:
+            with interviews.database.transaction(write=True) as records:
+                active = records.get("voice", session_id)
+                session = records.get("sessions", session_id)
+                if active and active["id"] == connection["id"] and active["state"] == "active" and not session["finished"]:
+                    session["evidenceFocus"] = source
+                    event(records, session, "evidence.focus", evidence=source)
+                    records.put("sessions", session_id, session)
+    except Exception as exc:
+        logger.warning("Agora voice lookup recovery failed (%s).", getattr(exc, "status_code", type(exc).__name__))
 
 
 class Connection(BaseModel):
@@ -267,7 +336,8 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
         return {"active": False}
 
     @router.post("/tools/{session_id}/{name}")
-    def voice_tool(session_id: str, name: str, body: ToolData, authorization: str = Header(default="")):
+    def voice_tool(session_id: str, name: str, body: ToolData, background: BackgroundTasks,
+                   authorization: str = Header(default="")):
         with database.transaction() as records:
             session = interviews.authorize(records, session_id, authorization, voice=True)
             connection = records.get("voice", session_id)
@@ -279,7 +349,10 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
                 topic = interviews.active_topic(session)
             lookup = body.question.strip() or (topic["title"] if topic else "")
             answer = interviews.knowledge.context(session["snapshotId"], lookup, revision=session["revision"])
-            return {"topic": topic, **answer}
+            result = {"topic": topic, **answer}
+            if connection.get("agentId"):
+                background.add_task(speak_stalled_lookup, gateway, interviews, session_id, connection, result)
+            return result
         if name == "showEvidence":
             try:
                 excerpt = interviews.snapshots.source(session["snapshotId"], body.path, int(body.start), int(body.end))

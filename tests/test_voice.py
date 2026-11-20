@@ -79,6 +79,7 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
 
     class FakeGateway:
         token = None
+        spoken = []
 
         @staticmethod
         def available():
@@ -98,6 +99,20 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
             return "We retry webhook errors once."
 
         @staticmethod
+        def history(connection):
+            assert connection["agentId"] == "provider-agent"
+            lookup = SimpleNamespace(role="tool", content='{"topic": null, "findings": []}')
+            return [
+                SimpleNamespace(role="user", content="Which file handles webhook retries?"),
+                lookup, SimpleNamespace(role="assistant", content=None), lookup,
+            ]
+
+        @staticmethod
+        def speak(connection, text):
+            assert connection["agentId"] == "provider-agent"
+            FakeGateway.spoken.append(text)
+
+        @staticmethod
         def stop(connection):
             assert connection["agentId"] == "provider-agent"
 
@@ -114,6 +129,9 @@ def test_voice_tools_are_session_bound_and_use_verified_transcript(tmp_path):
         assert client.post(voice + "/start", headers=browser, json=connection).status_code == 200
         tools = "/voice/tools/" + session["id"]
         agent = {"Authorization": "Bearer " + FakeGateway.token}
+        for _ in range(2):
+            assert client.post(tools + "/getDecisionContext", headers=agent, json={}).status_code == 200
+        assert len(FakeGateway.spoken) == 1
         assert client.post(tools + "/proposeChange", headers=browser, json={"summary": "Fake."}).status_code == 401
         result = client.post(tools + "/proposeChange", headers=agent, json={"summary": "Webhook retries are limited to one."})
         assert result.status_code == 200, result.text
