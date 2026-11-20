@@ -1,0 +1,21 @@
+# Only files used to build and check the image are uploaded to Cloud Build.
+*
+!.dockerignore
+!Dockerfile
+!cloudbuild.yaml
+!pyproject.toml
+!uv.lock
+!codelineage/
+!codelineage/*.py
+!web/
+!web/package.json
+!web/package-lock.json
+!web/next.config.ts
+!web/tsconfig.json
+!web/postcss.config.mjs
+!web/app/
+!web/app/**
+!web/src/
+!web/src/**
+!deploy/
+!deploy/smoke.py

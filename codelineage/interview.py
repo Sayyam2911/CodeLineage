@@ -11,6 +11,7 @@ import time
 from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -477,7 +478,7 @@ def interview_routes(service: Interviews) -> APIRouter:
     @router.get("/{session_id}/events")
     async def events(session_id: str, request: Request, after: int = 0, wait: bool = True,
                      authorization: str = Header(default=""), last_event_id: str = Header(default="")):
-        current(session_id, authorization)
+        await run_in_threadpool(current, session_id, authorization)
         cursor = max(0, after)
         if last_event_id:
             event_session, _, sequence = last_event_id.partition(":")
@@ -485,13 +486,16 @@ def interview_routes(service: Interviews) -> APIRouter:
                 raise HTTPException(422, "The event cursor does not belong to this session.")
             cursor = max(cursor, int(sequence))
 
+        def read_events(after_sequence):
+            with service.database.transaction() as records:
+                return [row for _, row in records.items(f"events:{session_id}") if row["seq"] > after_sequence]
+
         async def stream():
             nonlocal cursor
             for _ in range(40 if wait else 1):
                 if await request.is_disconnected():
                     return
-                with service.database.transaction() as records:
-                    pending = [row for _, row in records.items(f"events:{session_id}") if row["seq"] > cursor]
+                pending = await run_in_threadpool(read_events, cursor)
                 for row in pending:
                     cursor = row["seq"]
                     yield f"id: {row['eventId']}\nevent: {row['type']}\ndata: {json.dumps(row)}\n\n"

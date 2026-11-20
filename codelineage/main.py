@@ -57,10 +57,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             scan, reused = scans.begin(repo, commit, scope)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        if not reused:
+            if cloud.job:
+                scan = scans.dispatch(scan["id"])
+            else:
+                app.state.worker.submit(scans.dispatch, scan["id"])
         if scan["status"] not in RUNNING:
             response.status_code = 200
-        if not reused:
-            app.state.worker.submit(scans.dispatch, scan["id"])
         return scan | {"reused": reused}
 
     @app.get("/scans/{id_}")

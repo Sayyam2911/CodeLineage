@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -89,3 +90,30 @@ def test_managed_tasks_reject_unauthenticated_and_stale_attempts(tmp_path, monke
         assert client.post(url).status_code == 403
         monkeypatch.setattr(CloudPipeline, "authorized", lambda self, bearer: bearer == "Bearer task-test")
         assert client.post(url, headers={"Authorization": "Bearer task-test"}).json() == {"skipped": True}
+
+
+def test_managed_scan_launch_is_acknowledged_before_the_response(tmp_path, monkeypatch):
+    launches = []
+    cloud = SimpleNamespace(job="codelineage-scan", launch=launches.append)
+    monkeypatch.setattr("codelineage.main.CloudPipeline", lambda: cloud)
+    app = create_app(tmp_path)
+
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state.worker, "submit", lambda *args: pytest.fail("Managed launch must run inside the request."))
+        body = {"url": "https://github.com/example/project", "ref": "c" * 40}
+        response = client.post("/scans", json=body)
+        assert response.status_code == 202
+        scan = response.json()
+        assert scan["status"] == "scanning" and scan["reused"] is False
+        assert launches == [{key: value for key, value in scan.items() if key != "reused"}]
+
+        # A Cloud Run retry can still be capturing at the local scan timeout.
+        monkeypatch.setattr("codelineage.scans.time", SimpleNamespace(time=lambda: scan["updated"] + 1600))
+        repeat = client.post("/scans", json=body)
+        assert repeat.status_code == 202 and repeat.json()["reused"] is True
+        assert len(launches) == 1
+
+        monkeypatch.setattr("codelineage.scans.time", SimpleNamespace(time=lambda: scan["updated"] + 2701))
+        assert client.get(f"/scans/{scan['id']}").json()["status"] == "failed"
+        retry = client.post("/scans", json=body).json()
+        assert retry["status"] == "scanning" and retry["attempt"] != scan["attempt"]

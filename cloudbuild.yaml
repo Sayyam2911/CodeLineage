@@ -1,0 +1,15 @@
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env: ['DOCKER_BUILDKIT=1']
+    args: ['build', '--platform=linux/amd64', '--tag', '${_IMAGE}', '.']
+  - id: smoke-test
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ec
+      - docker run --rm --network=none -i '${_IMAGE}' - --container < deploy/smoke.py
+images: ['${_IMAGE}']
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1200s

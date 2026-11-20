@@ -54,23 +54,22 @@ Use **Play question** to resume audio after a reload and **Repeat question** to 
 
 ## Managed deployment
 
-Use the same container image for the Cloud Run service and scan job. The web bundle is served by FastAPI in the service image. A local image build is `docker build -t codelineage:local .`. In a managed development network with a proxy CA, pass `--secret id=proxy_ca,src=/etc/ssl/certs/ca-certificates.crt` to the build so package installs retain TLS verification.
+Use Python 3.10+, an authenticated Google Cloud CLI, and a billing-enabled project where you can enable APIs, create resources, and grant IAM roles. Put your Aura and Agora Studio settings in the gitignored `.env` using the names in `.env.example`. Set `CODELINEAGE_ANALYSIS_KEY` to enable model-based review.
 
-1. Create a private Cloud Storage bucket, a Cloud Tasks queue, a Neo4j database, and separate Cloud Run service and job service accounts.
-2. Build and publish the image to Artifact Registry. Deploy the Cloud Run service with its service identity and the shared settings below. Bind secret values through Secret Manager. Use the HTTPS service URL for `CODELINEAGE_TASK_SERVICE` and `CODELINEAGE_PUBLIC_URL`.
-3. Deploy a Cloud Run Job using the same image and the scan-job identity. Allow at least 20 minutes and memory for the capped 250 MiB source capture and Graphify. The service overrides the job arguments with `-m codelineage.worker OWNER/REPO COMMIT SCOPE ATTEMPT`.
-4. Grant the API service identity permission to run the job with overrides, read the bucket, and enqueue Cloud Tasks. Grant the scan job identity permission to create and read bucket objects and enqueue tasks. The enqueuing identities need permission to use the task OIDC identity. Configure the task service identity as an authorized invoker for Cloud Run when service authentication applies. The backend independently validates Google OIDC tokens for the internal analysis route.
-5. Configure `CODELINEAGE_SCAN_JOB` on the service after the job exists, then smoke-test the Healthchecks import and read-only retrieval. Live voice tools require public HTTPS reachability for the scoped tool endpoints.
+~~~sh
+python deploy/google_cloud.py --check
+python deploy/google_cloud.py --project YOUR_PROJECT_ID --region us-central1
+~~~
 
-| Setting | Service | Scan job |
-| --- | --- | --- |
-| `CODELINEAGE_SNAPSHOT_BUCKET` | Private bucket name | Same bucket name |
-| `CODELINEAGE_TASK_QUEUE` | `projects/PROJECT/locations/REGION/queues/QUEUE` | Same queue |
-| `CODELINEAGE_TASK_SERVICE` | HTTPS service base URL and task OIDC audience | Same URL |
-| `CODELINEAGE_TASK_IDENTITY` | Task service account email | Same email |
-| `CODELINEAGE_SCAN_JOB` | `projects/PROJECT/locations/REGION/jobs/JOB` | Omit |
-| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` | Managed Neo4j credentials and database name | Omit |
-| `CODELINEAGE_ANALYSIS_KEY` and voice settings | Provider secrets and configuration | Omit |
+The command builds and tests a Linux image in Cloud Build and deploys its digest to both the public Cloud Run service and the scan job. It configures Artifact Registry, private build and snapshot buckets, the analysis queue, and separate service accounts. The API gets its credentials from numbered Secret Manager versions and uses its Cloud Run HTTPS URL for Agora callbacks. The API independently verifies the Google-issued OIDC token on each analysis task. The command reuses provisioned resources on later runs. Pass `--env-file PATH` for a different env file or `--rotate-secrets` to publish new credential versions. [Cloud Run container contract](https://docs.cloud.google.com/run/docs/container-contract) · [Cloud Tasks authentication](https://docs.cloud.google.com/tasks/docs/creating-http-target-tasks)
+
+The deployment prints the service URL after checking the homepage, health endpoint, task authentication, and voice configuration. Run the Healthchecks smoke test against that URL to verify the scan job, Cloud Storage artifacts, Aura-backed diagram, and source lines. A snapshot captured locally gets its Cloud Storage copy on the first hosted scan.
+
+~~~sh
+python deploy/smoke.py https://YOUR_SERVICE_URL --voice --scan
+~~~
+
+To exercise the hosted voice flow, open the service URL, confirm an answer in **Start a voice review**, and ask for its rationale in a fresh **Explore reviewed code** session. To build the image locally, run `docker build -t codelineage:local .`. On a development network with a proxy CA, pass `--secret id=proxy_ca,src=/etc/ssl/certs/ca-certificates.crt` to Docker so the package installs can verify TLS.
 
 The scan job uploads immutable artifacts and writes the completion manifest last. The backend checks the manifest and archive checksum before reading source. Cloud Tasks resume analysis in bounded steps tied to a scan attempt, and rerunning a step reuses its checkpoint. Confirmation commits the claim, its evidence, the receipt and the event in a single Neo4j transaction.
 

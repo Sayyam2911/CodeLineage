@@ -9,6 +9,8 @@ from codelineage.snapshots import scan_id
 
 logger = logging.getLogger(__name__)
 RUNNING = {"queued", "scanning", "analyzing"}
+INACTIVE_SECONDS = 1500
+MANAGED_CAPTURE_SECONDS = 2700
 
 
 class Scans:
@@ -19,12 +21,21 @@ class Scans:
         self.cloud = cloud
         self.semantic = SemanticReview(knowledge)
 
+    def expired(self, scan: dict) -> bool:
+        # Cloud Run can give each of the two capture attempts up to 20 minutes.
+        timeout = MANAGED_CAPTURE_SECONDS if self.cloud.job and scan["status"] == "scanning" else INACTIVE_SECONDS
+        return time.time() - scan["updated"] >= timeout
+
     def get(self, scan: str) -> dict:
         with self.database.transaction() as records:
             job = records.get("scan", scan)
         if job:
-            if job["status"] in RUNNING and time.time() - job["updated"] > 1500:
-                return self.update(scan, {"status": "failed", "error": "The scan has timed out. Retry to resume."})
+            if job["status"] in RUNNING and self.expired(job):
+                with self.database.transaction(write=True) as records:
+                    job = records.get("scan", scan)
+                    if job["status"] in RUNNING and self.expired(job):
+                        job |= {"status": "failed", "error": "The scan has timed out. Retry to resume.", "updated": time.time()}
+                        records.put("scan", scan, job)
             return job
         manifest = self.snapshots.manifest(scan)
         return self.result(manifest)
@@ -60,7 +71,7 @@ class Scans:
             pass
         with self.database.transaction(write=True) as records:
             prior = records.get("scan", id_)
-            if prior and prior["status"] in RUNNING and time.time() - prior["updated"] < 1500:
+            if prior and prior["status"] in RUNNING and not self.expired(prior):
                 return prior, True
             job = common | {"status": "queued", "updated": time.time(), "attempt": secrets.token_hex(8)}
             records.put("scan", id_, job)
@@ -69,15 +80,16 @@ class Scans:
     def dispatch(self, id_: str):
         try:
             if self.cloud.job:
-                self.cloud.launch(self.update(id_, {"status": "scanning"}))
-            else:
-                self.run(id_)
+                scan = self.update(id_, {"status": "scanning"})
+                self.cloud.launch(scan)
+                return scan
+            return self.run(id_)
         except ValueError as exc:
             logger.warning("Scan %s failed: %s", id_, exc)
-            self.update(id_, {"status": "failed", "error": str(exc)})
+            return self.update(id_, {"status": "failed", "error": str(exc)})
         except Exception:
             logger.exception("Scan %s failed", id_)
-            self.update(id_, {"status": "failed", "error": "Capture or analysis could not finish. Retry the scan."})
+            return self.update(id_, {"status": "failed", "error": "Capture or analysis could not finish. Retry the scan."})
 
     def recover_local(self, worker):
         if self.cloud.job:

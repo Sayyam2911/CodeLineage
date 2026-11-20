@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM node:22-bookworm-slim AS web
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
@@ -27,4 +28,4 @@ COPY --from=web --chown=65532:65532 /app/web/dist ./web/dist
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["python"]
-CMD ["-m", "uvicorn", "codelineage.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["-m", "codelineage"]
