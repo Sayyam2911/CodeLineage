@@ -41,7 +41,7 @@ class Knowledge:
             if cached:
                 return cached
         manifest = self.snapshots.manifest(snapshot)
-        graph = self.snapshots.graph(snapshot)
+        graph = self.database.snapshot_graph(self.snapshots, snapshot)
         scope = manifest["scope"]
         findings = []
         covered = set()
@@ -140,7 +140,7 @@ class Knowledge:
                 old = previous[baselines[prior_scope]]["files"]
                 if signature(old.get(path)) != signature(new.get(path)):
                     changed.add(path)
-        graphs = [self.snapshots.graph(id_) for id_ in sorted({snapshot, *previous})]
+        graphs = [self.database.snapshot_graph(self.snapshots, id_) for id_ in sorted({snapshot, *previous})]
         affected = set(changed)
         for graph in graphs:
             nodes = {item["id"]: item["path"] for item in graph["nodes"]}
@@ -167,7 +167,7 @@ class Knowledge:
     def projection(self, snapshot: str, revision: int | None) -> dict:
         manifest = self.snapshots.manifest(snapshot)
         repo = manifest["repo"]
-        graph = self.snapshots.graph(snapshot)
+        graph = self.database.snapshot_graph(self.snapshots, snapshot)
         with self.database.transaction() as records:
             latest = head(records, repo)["revision"]
             revision = latest if revision is None else revision

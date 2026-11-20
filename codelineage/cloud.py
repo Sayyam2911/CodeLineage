@@ -5,10 +5,12 @@ import json
 import os
 import tarfile
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
+from codelineage import neo4j_graph
 from codelineage.snapshots import Snapshots
 from codelineage.store import Database
 
@@ -37,6 +39,8 @@ class Neo4jRecords:
         ).consume()
         if namespace.startswith("claims:"):
             self.write_claim(namespace.removeprefix("claims:"), value)
+        elif namespace in {"findings", "semantic"}:
+            neo4j_graph.write_findings(self.transaction, key, namespace, value["items"])
 
     def write_claim(self, repo: str, claim: dict):
         self.transaction.run(
@@ -45,7 +49,9 @@ class Neo4jRecords:
             MERGE (claim:ArchitectureClaim {repo:$repo, id:$claim.claimId})
             MERGE (repo)-[:HAS_CLAIM]->(claim)
             MERGE (rev:ClaimRevision {repo:$repo, revision:$claim.revision})
-            SET rev.statement=$claim.statement, rev.origin=$claim.origin, rev.speaker=$claim.speaker
+            SET rev.title=$claim.title, rev.statement=$claim.statement, rev.origin=$claim.origin,
+                rev.speaker=$claim.speaker, rev.operation=$claim.operation, rev.label=$claim.label,
+                rev.topicId=$claim.topicId
             MERGE (claim)-[:HAS_REVISION]->(rev)
             MERGE (snapshot:CodeSnapshot {id:$claim.snapshotId})
             MERGE (repo)-[:HAS_SNAPSHOT]->(snapshot)
@@ -58,8 +64,13 @@ class Neo4jRecords:
             FOREACH (ref IN $refs |
                 MERGE (e:ClaimEvidence {repo:$repo, revision:$claim.revision, position:ref.position})
                 SET e.kind=ref.kind, e.path=ref.path, e.start=ref.start, e.end=ref.end,
-                    e.turnId=ref.turnId, e.sessionId=ref.sessionId, e.text=ref.text, e.speaker=ref.speaker
+                    e.turnId=ref.turnId, e.sessionId=ref.sessionId, e.text=ref.text, e.speaker=ref.speaker,
+                    e.title=ref.title, e.url=ref.url, e.snapshotId=ref.snapshotId
                 MERGE (rev)-[:SUPPORTED_BY]->(e)
+                FOREACH (_ IN CASE WHEN ref.kind='source' AND ref.path IS NOT NULL THEN [1] ELSE [] END |
+                    MERGE (file:SourceFile {snapshot:coalesce(ref.snapshotId, $claim.snapshotId), path:ref.path})
+                    MERGE (e)-[:CITES]->(file)
+                )
             )
             FOREACH (_ IN CASE WHEN $claim.targetId IS NULL THEN [] ELSE [1] END |
                 MERGE (target:GraphTarget {snapshot:$claim.snapshotId, id:$claim.targetId})
@@ -69,6 +80,21 @@ class Neo4jRecords:
                 MERGE (base:ArchitectureClaim {repo:$repo, id:$claim.exceptionTo})
                 MERGE (rev)-[:EXCEPTION_TO]->(base)
             )
+            FOREACH (_ IN CASE WHEN $claim.operation='add_component' AND $claim.targetId IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (component:GraphTarget {snapshot:$claim.snapshotId, id:$claim.targetId})
+                SET component:InterviewComponent, component.label=$claim.label, component.origin='interview'
+                MERGE (rev)-[:INTRODUCES]->(component)
+            )
+            FOREACH (_ IN CASE WHEN $claim.operation='add_connection'
+                                AND $claim.targetId IS NOT NULL AND $claim.relatedId IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (source:GraphTarget {snapshot:$claim.snapshotId, id:$claim.targetId})
+                MERGE (target:GraphTarget {snapshot:$claim.snapshotId, id:$claim.relatedId})
+                MERGE (rev)-[:CONNECTS_FROM]->(source)
+                MERGE (rev)-[:CONNECTS_TO]->(target)
+            )
+            WITH rev, snapshot
+            MATCH (snapshot)-[:HAS_FINDING]->(finding:ReviewFinding {id:$claim.topicId})
+            MERGE (rev)-[:ANSWERS]->(finding)
             """,
             repo=repo, claim=claim,
             refs=[ref | {"position": index} for index, ref in enumerate(claim["evidence"])],
@@ -81,6 +107,8 @@ class Neo4jDatabase:
 
         self.driver = GraphDatabase.driver(uri, auth=(user, password) if user else None)
         self.name = name
+        # Snapshot IDs pin the source and extractor version. Claim revisions are read separately.
+        self._snapshot_topology = lru_cache(maxsize=4)(self._load_snapshot_graph)
         with self.driver.session(database=name) as session:
             session.run(
                 """CREATE CONSTRAINT lineage_records IF NOT EXISTS FOR (r:LineageRecord)
@@ -89,7 +117,37 @@ class Neo4jDatabase:
             session.run(
                 "CREATE CONSTRAINT lineage_mutex IF NOT EXISTS FOR (l:LineageMutex) REQUIRE l.name IS UNIQUE"
             ).consume()
+            for constraint in neo4j_graph.CONSTRAINTS:
+                session.run(constraint).consume()
             session.run("MERGE (l:LineageMutex {name:'records'}) ON CREATE SET l.version=0").consume()
+
+    def ensure_snapshot(self, snapshots: Snapshots, snapshot: str) -> None:
+        with self.transaction() as records:
+            if neo4j_graph.has_snapshot(records.transaction, snapshot):
+                return
+        self.publish_snapshot(snapshots, snapshot)
+
+    def snapshot_graph(self, snapshots: Snapshots, snapshot: str) -> dict:
+        return self._snapshot_topology(snapshots, snapshot)
+
+    def _load_snapshot_graph(self, snapshots: Snapshots, snapshot: str) -> dict:
+        with self.transaction() as records:
+            graph = neo4j_graph.snapshot_graph(records.transaction, snapshot)
+        return graph if graph is not None else self.publish_snapshot(snapshots, snapshot)
+
+    def publish_snapshot(self, snapshots: Snapshots, snapshot: str) -> dict:
+        manifest = snapshots.manifest(snapshot)
+        graph = snapshots.graph(snapshot)
+        with self.transaction(write=True) as records:
+            if not neo4j_graph.has_snapshot(records.transaction, snapshot):
+                neo4j_graph.write_snapshot(records.transaction, snapshot, manifest, graph)
+                for layer in ("findings", "semantic"):
+                    if prior := records.get(layer, snapshot):
+                        neo4j_graph.write_findings(records.transaction, snapshot, layer, prior["items"])
+                for _, claim in records.items("claims:" + manifest["repo"]):
+                    if claim["snapshotId"] == snapshot:
+                        records.write_claim(manifest["repo"], claim)
+        return graph
 
     @contextmanager
     def transaction(self, *, write: bool = False):

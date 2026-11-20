@@ -31,6 +31,7 @@ class Scans:
 
     def result(self, manifest: dict, *, complete: bool = True) -> dict:
         id_ = manifest["id"]
+        self.database.ensure_snapshot(self.snapshots, id_)
         analysis = self.knowledge.findings(id_)
         partial = bool(manifest["coverage"].get("failed")) or not complete
         return {key: manifest[key] for key in ("id", "repo", "commit", "scope", "coverage")} | {

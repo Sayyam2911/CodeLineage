@@ -53,3 +53,12 @@ class Database:
             raise
         finally:
             connection.close()
+
+    @staticmethod
+    def ensure_snapshot(snapshots, snapshot: str) -> None:
+        # The immutable graph is already stored alongside the local snapshot.
+        return None
+
+    @staticmethod
+    def snapshot_graph(snapshots, snapshot: str) -> dict:
+        return snapshots.graph(snapshot)

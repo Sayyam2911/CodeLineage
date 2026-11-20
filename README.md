@@ -25,7 +25,7 @@ uv run --locked pytest
 npm --prefix web run build
 ~~~
 
-Set `CODELINEAGE_TEST_NEO4J_URI` for the Neo4j integration test. For a disposable local database, also set `CODELINEAGE_TEST_NEO4J_USER` and `CODELINEAGE_TEST_NEO4J_PASSWORD` to its configured credentials. An empty username selects an unauthenticated test instance.
+Set `CODELINEAGE_TEST_NEO4J_URI` for the Neo4j integration test. Set `CODELINEAGE_TEST_NEO4J_USER` and `CODELINEAGE_TEST_NEO4J_PASSWORD` to its credentials, and `CODELINEAGE_TEST_NEO4J_DATABASE` if its database name differs from `neo4j`. An empty username selects an unauthenticated test instance. The test uses a uniquely named synthetic repository and removes its records afterward.
 
 ## Semantic analysis and voice
 
@@ -69,7 +69,16 @@ Use the same container image for the Cloud Run service and scan job. The web bun
 | `CODELINEAGE_TASK_SERVICE` | HTTPS service base URL and task OIDC audience | Same URL |
 | `CODELINEAGE_TASK_IDENTITY` | Task service account email | Same email |
 | `CODELINEAGE_SCAN_JOB` | `projects/PROJECT/locations/REGION/jobs/JOB` | Omit |
-| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` | Managed Neo4j credentials | Omit |
+| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` | Managed Neo4j credentials and database name | Omit |
 | `CODELINEAGE_ANALYSIS_KEY` and voice settings | Provider secrets and configuration | Omit |
 
 The scan job uploads immutable artifacts and writes the completion manifest last. The backend checks the manifest and archive checksum before reading source. Cloud Tasks resume analysis in bounded steps tied to a scan attempt, and rerunning a step reuses its checkpoint. Confirmation commits the claim, its evidence, the receipt and the event in a single Neo4j transaction.
+
+With Neo4j configured, each completed scan publishes a commit-pinned graph of files, components, extracted and inferred relationships, and review findings. Opening an existing snapshot publishes its graph if needed. The diagram and interview context use this topology, and source excerpts are read from the pinned snapshot artifacts. Start a Cypher graph view at a repository to see the connected data.
+
+~~~cypher
+MATCH p=(r:CodeRepository {name: 'healthchecks/healthchecks'})
+  -[:HAS_SNAPSHOT]->(:CodeSnapshot)-[:HAS_FILE]->(f:SourceFile {path: 'hc/api/models.py'})
+  -[:DEFINES]->(:CodeComponent)-[:CODE_RELATION]->(:CodeComponent)
+RETURN p LIMIT 25
+~~~
