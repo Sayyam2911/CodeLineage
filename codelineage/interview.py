@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import time
 from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -50,6 +51,10 @@ class ProposalAction(BaseModel):
 class Question(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     targetId: str | None = Field(default=None, max_length=300)
+
+
+class TopicSelection(BaseModel):
+    topicId: str = Field(min_length=1, max_length=120)
 
 
 def token_digest(token: str) -> str:
@@ -128,7 +133,7 @@ class Interviews:
             "id": secrets.token_hex(16), "tokenHash": token_digest(token),
             "repo": repo, "snapshotId": id_, "mode": request.mode,
             "speaker": request.speaker.strip() or "Interview participant", "topics": topics,
-            "index": 0, "seq": 0, "turnSeq": 0, "revision": state["revision"],
+            "index": 0, "topicVersion": 0, "seq": 0, "turnSeq": 0, "revision": state["revision"],
             "pending": None, "outcomes": {}, "finished": False, "snapshotScope": manifest["scope"],
         }
         with self.database.transaction(write=True) as records:
@@ -145,12 +150,15 @@ class Interviews:
             event(records, session, f"proposal.{status}", proposalId=pending["id"])
 
     def stage(self, session_id: str, auth: str, request: Answer, *, voice_answer: str | None = None,
-              voice_turn: str | None = None, expected_topic: str | None = None) -> dict:
+              voice_turn: str | None = None, expected_topic: str | None = None,
+              expected_topic_version: int | None = None) -> dict:
         with self.database.transaction() as records:
             session = self.authorize(records, session_id, auth, voice=voice_answer is not None)
             self.writable(session)
             topic = self.active_topic(session)
-            if expected_topic and topic["id"] != expected_topic:
+            topic_version = session.get("topicVersion", 0)
+            if ((expected_topic and topic["id"] != expected_topic) or
+                    (expected_topic_version is not None and topic_version != expected_topic_version)):
                 raise HTTPException(409, "The interview moved to another question. Record your answer to the current question.")
         answer = request.text.strip()
         if not answer:
@@ -202,7 +210,8 @@ class Interviews:
         with self.database.transaction(write=True) as records:
             session = self.authorize(records, session_id, auth, voice=voice_answer is not None)
             self.writable(session)
-            if self.active_topic(session)["id"] != topic["id"] or session["revision"] != graph["revision"]:
+            if (session.get("topicVersion", 0) != topic_version or self.active_topic(session)["id"] != topic["id"]
+                    or session["revision"] != graph["revision"]):
                 raise HTTPException(409, "The review moved to a different topic or revision.")
             voice_proposals = f"voice_proposals:{session_id}"
             if voice_turn and (prior := records.get(voice_proposals, voice_turn)):
@@ -233,6 +242,46 @@ class Interviews:
             raise HTTPException(409, "The review has no remaining topics.")
         return session["topics"][session["index"]]
 
+    @staticmethod
+    def next_question(session: dict) -> int:
+        topics = session["topics"]
+        for offset in range(1, len(topics) + 1):
+            index = (session["index"] + offset) % len(topics)
+            if topics[index]["id"] not in session["outcomes"]:
+                return index
+        return len(topics)
+
+    @staticmethod
+    def set_topic(records, session: dict, index: int) -> None:
+        session["index"] = index
+        session["topicVersion"] = session.get("topicVersion", 0) + 1
+        session.pop("evidenceFocus", None)
+        if (connection := records.get("voice", session["id"])) and connection.get("guided"):
+            records.put("voice", session["id"], connection | {"capture": None, "promptedTopic": None, "promptId": None})
+
+    def select_topic(self, session_id: str, auth: str, topic_id: str) -> dict:
+        with self.database.transaction(write=True) as records:
+            session = self.authorize(records, session_id, auth)
+            self.writable(session)
+            index = next((i for i, topic in enumerate(session["topics"]) if topic["id"] == topic_id), None)
+            if index is None:
+                raise HTTPException(404, "That question is outside this review.")
+            if session["outcomes"].get(topic_id) == "confirmed":
+                raise HTTPException(409, "This question already has a confirmed decision.")
+            receipt = session.get("latestReceipt")
+            if index == session["index"] and not (receipt and receipt.get("topicVersion", 0) == session.get("topicVersion", 0)):
+                return self.public(session)
+            if session["pending"]:
+                raise HTTPException(409, "Confirm or interrupt the read-back before opening another question.")
+            connection = records.get("voice", session_id) or {}
+            if (connection.get("state") == "active" and connection["expiresAt"] > time.time()
+                    and (connection.get("capture") or {}).get("phase") == "recording"):
+                raise HTTPException(409, "Finish your recording before opening another question.")
+            self.set_topic(records, session, index)
+            event(records, session, "topic.open", topicId=topic_id)
+            records.put("sessions", session_id, session)
+            return self.public(session)
+
     def skip(self, session_id: str, auth: str, expected_topic: str | None = None, answer: str | None = None) -> dict:
         with self.database.transaction(write=True) as records:
             session = self.authorize(records, session_id, auth)
@@ -244,8 +293,10 @@ class Interviews:
             if answer:
                 turn(records, session, "participant", answer, purpose="unknown")
             session["outcomes"][topic["id"]] = "open"
-            session["index"] += 1
-            event(records, session, "topic.open", topicId=topic["id"])
+            next_index = self.next_question(session)
+            self.set_topic(records, session, next_index)
+            next_topic = session["topics"][next_index] if next_index < len(session["topics"]) else None
+            event(records, session, "topic.open", topicId=next_topic["id"] if next_topic else None)
             records.put("sessions", session_id, session)
             return self.public(session)
 
@@ -329,16 +380,17 @@ class Interviews:
             records.put(f"claims:{session['repo']}", f"{revision:012d}:{claim_id}", claim)
             proposal["status"] = "committed"
             records.put(f"proposals:{session_id}", proposal["id"], proposal)
+            session["outcomes"][proposal["topicId"]] = "confirmed"
+            self.set_topic(records, session, self.next_question(session))
             receipt = {"proposalId": proposal["id"], "readbackTurnId": readback["id"],
-                       "assentTurnId": assent["id"], "revision": revision, "claim": claim}
+                       "assentTurnId": assent["id"], "revision": revision, "claim": claim,
+                       "topicVersion": session["topicVersion"]}
             records.put(f"receipts:{session_id}", proposal["id"], receipt)
             session["latestReceipt"] = receipt
             state.update(revision=revision, snapshotId=session["snapshotId"])
             records.put("lineage", session["repo"], state)
             session["revision"] = revision
             session["pending"] = None
-            session["outcomes"][proposal["topicId"]] = "confirmed"
-            session["index"] += 1
             event(records, session, "revision.committed", receipt=receipt)
             records.put("sessions", session_id, session)
             return receipt
@@ -408,6 +460,10 @@ def interview_routes(service: Interviews) -> APIRouter:
     @router.post("/{session_id}/skip")
     def skip(session_id: str, authorization: str = Header(default="")):
         return service.skip(session_id, authorization)
+
+    @router.post("/{session_id}/topic")
+    def select_topic(session_id: str, body: TopicSelection, authorization: str = Header(default="")):
+        return service.select_topic(session_id, authorization, body.topicId)
 
     @router.post("/{session_id}/finish")
     def finish(session_id: str, authorization: str = Header(default="")):

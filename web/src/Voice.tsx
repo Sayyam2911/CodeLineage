@@ -15,16 +15,19 @@ type Call = {
   cleanupPlayback?: () => void
   phase: AnswerPhase
   topicId?: string
+  topicVersion?: number
   prompted?: string
 }
 
-export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topicId, announceTopic }: {
+export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topicId, topicVersion, announceTopic, paused }: {
   sessionId: string
   token: string
   enabled: boolean
   autoConnect: boolean
   topicId?: string
+  topicVersion: number
   announceTopic: boolean
+  paused: boolean
 }) {
   const [available, setAvailable] = useState<boolean | null>(null)
   const [connection, setConnection] = useState<'idle' | 'joining' | 'connected' | 'leaving'>('idle')
@@ -34,6 +37,7 @@ export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topi
   const [blocked, setBlocked] = useState(false)
   const [error, setError] = useState('')
   const live = useRef<Call | null>(null)
+  const playbackPaused = useRef(paused)
   const autoAttempted = useRef(false)
   const meter = useRef<HTMLDivElement>(null)
   const promptTimer = useRef<number | undefined>(undefined)
@@ -91,6 +95,7 @@ export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topi
           const track = await rtc.subscribe(user, 'audio')
           if (live.current !== call) return
           call.remote = track
+          track.setVolume(playbackPaused.current ? 0 : 100)
           track.play()
         } catch {
           if (live.current === call) setError('Could not play the interviewer’s audio.')
@@ -110,17 +115,18 @@ export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topi
   }
 
   async function present(call: Call, question: string, repeat = false) {
-    if (!call.room || (call.prompted === question && !repeat)) return
-    call.prompted = question
+    const key = question + ':' + topicVersion
+    if (!call.room || (call.prompted === key && !repeat)) return
+    call.prompted = key
     setPresenting(true); setError('')
     window.clearTimeout(promptTimer.current)
     try {
-      await request(prefix + '/prompt', { connectionId: call.room.connectionId, topicId: question, repeat }, token)
-      if (live.current === call) {
+      await request(prefix + '/prompt', { connectionId: call.room.connectionId, topicId: question, topicVersion, repeat }, token)
+      if (live.current === call && call.prompted === key) {
         promptTimer.current = window.setTimeout(() => setPresenting(false), 3200)
       }
     } catch (error) {
-      if (live.current === call) {
+      if (live.current === call && call.prompted === key) {
         call.prompted = undefined
         setPresenting(false)
         setError((error as Error).message)
@@ -139,7 +145,7 @@ export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topi
   async function capture(call: Call, stage: 'recording' | 'submitted' | 'cancelled', change?: ChangeOptions) {
     if (!call.room) return
     await request(prefix + '/capture', {
-      connectionId: call.room.connectionId, phase: stage, topicId: call.topicId ?? null, change,
+      connectionId: call.room.connectionId, phase: stage, topicId: call.topicId ?? null, topicVersion: call.topicVersion, change,
     }, token)
   }
 
@@ -161,6 +167,7 @@ export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topi
     if (!call?.rtc || call.phase !== 'ready') return
     step(call, 'opening'); setError('')
     call.topicId = topicId
+    call.topicVersion = topicVersion
     try {
       const sdk = await voiceRtc()
       ensureCurrent(call)
@@ -241,9 +248,20 @@ export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topi
   }, [enabled, available, autoConnect])
 
   useEffect(() => {
+    playbackPaused.current = paused
+    live.current?.remote?.setVolume(paused ? 0 : 100)
+    if (paused) setSpeaking(false)
+  }, [paused])
+
+  useEffect(() => {
     const call = live.current
-    if (enabled && connection === 'connected' && !blocked && call && topicId && announceTopic) void present(call, topicId)
-  }, [enabled, connection, blocked, topicId, announceTopic])
+    if (!enabled || connection !== 'connected' || !call) return
+    if (call.phase !== 'ready' && call.topicVersion !== topicVersion) {
+      void closeMic(call).catch(() => undefined)
+      step(call, 'ready')
+    }
+    if (!paused && !blocked && topicId && announceTopic) void present(call, topicId)
+  }, [enabled, connection, blocked, topicId, topicVersion, announceTopic, paused])
 
   useEffect(() => {
     const call = live.current
@@ -268,7 +286,7 @@ export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topi
 
   useEffect(() => {
     const call = live.current
-    if (!enabled || connection !== 'connected' || !call) return
+    if (!enabled || paused || connection !== 'connected' || !call) return
     let lastSpeech = -Infinity
     let remoteWasSpeaking = false
     const levels = window.setInterval(() => {
@@ -291,7 +309,7 @@ export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topi
       }
     }, 55)
     return () => { window.clearInterval(levels); meter.current?.style.removeProperty('--voice-level') }
-  }, [enabled, connection])
+  }, [enabled, connection, paused])
 
   useEffect(() => {
     if (phase !== 'waiting') return
@@ -302,7 +320,7 @@ export function useInterviewVoice({ sessionId, token, enabled, autoConnect, topi
     return () => window.clearTimeout(timeout)
   }, [phase])
 
-  const status = !enabled ? 'Interview complete' : available === null ? 'Checking audio'
+  const status = paused ? 'Audio paused' : !enabled ? 'Interview complete' : available === null ? 'Checking audio'
     : !available ? 'Audio unavailable' : connection === 'joining' ? 'Connecting audio'
     : connection === 'leaving' ? 'Closing audio'
     : connection !== 'connected' || blocked ? 'Audio paused'

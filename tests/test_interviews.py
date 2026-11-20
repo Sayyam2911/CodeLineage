@@ -80,3 +80,42 @@ def test_confirmation_is_explicit_revisioned_and_replayable(tmp_path):
         assert client.post(path + "/answer", headers=headers, json={"text": "Change this."}).status_code == 403
         assert client.post(path + "/finish", headers=headers).status_code == 200
         assert client.get("/lineages", params={"url": url}).json()["baselines"] == baseline
+
+
+def test_selecting_a_question_preserves_the_rest_of_the_review(tmp_path):
+    app = create_app(tmp_path)
+    snapshot = "a" * 64
+    fixture(app.state.snapshots, snapshot)
+    with TestClient(app) as client:
+        session = client.post("/sessions", json={"url": "https://github.com/example/project", "mode": "update",
+                                                "snapshotId": snapshot}).json()
+        path = f"/sessions/{session['id']}"
+        auth = {"Authorization": f"Bearer {session['token']}"}
+        first, last = session["topics"][0], session["topics"][-1]
+
+        def select(topic):
+            return client.post(path + "/topic", headers=auth, json={"topicId": topic["id"]})
+
+        assert client.post(path + "/topic", json={"topicId": last["id"]}).status_code == 401
+        assert select({"id": "another-review"}).status_code == 404
+        chosen = select(last).json()
+        assert chosen["index"] == len(session["topics"]) - 1
+        assert chosen["outcomes"] == {} and chosen["revision"] == 0
+        assert client.get(path, headers=auth).json() == chosen
+        assert select(last).json()["seq"] == chosen["seq"]
+
+        proposal = client.post(path + "/answer", headers=auth, json={"text": "Keep delivery ordered."}).json()["pending"]
+        assert proposal["topicId"] == last["id"]
+        assert select(first).status_code == 409
+        reviewed = client.post(path + "/readback", headers=auth, json={"proposalId": proposal["id"]}).json()["pending"]
+        saved = client.post(path + "/confirm", headers=auth, json={"proposalId": proposal["id"],
+                                                                  "readbackTurnId": reviewed["readbackTurnId"]}).json()
+        assert saved["claim"]["topicId"] == last["id"]
+        state = client.get(path, headers=auth).json()
+        assert state["index"] == 0 and state["topicVersion"] == saved["topicVersion"]
+        assert select(last).status_code == 409
+        resumed = select(first).json()
+        assert resumed["index"] == 0 and resumed["topicVersion"] > saved["topicVersion"]
+        assert client.post(path + "/skip", headers=auth, json={}).json()["index"] == 1
+        revisited = select(first).json()
+        assert revisited["index"] == 0 and revisited["outcomes"] == {last["id"]: "confirmed", first["id"]: "open"}

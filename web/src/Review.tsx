@@ -103,13 +103,16 @@ export function ClaimEntry({ claim, onOpen, showTitle }: { claim: Claim; onOpen:
   )
 }
 
-export function ReviewTopics({ session, claims, onTopic, onClaim }: {
+export function ReviewTopics({ session, claims, viewingTopic, disabled, onTopic, onClaim }: {
   session: Session
   claims: Claim[]
+  viewingTopic?: string
+  disabled: boolean
   onTopic: (item: Topic) => void
   onClaim: (item: Claim) => void
 }) {
   const update = session.mode === 'update'
+  const currentTopic = viewingTopic ?? (session.finished ? undefined : session.topics[session.index]?.id)
   const outcomes = session.outcomes ?? {}
   const confirmed = Object.values(outcomes).filter(status => status === 'confirmed').length
   return (
@@ -123,9 +126,9 @@ export function ReviewTopics({ session, claims, onTopic, onClaim }: {
       <CollapsibleContent>
         <ScrollArea className="topic-list-scroll">
           <div className="topic-list">
-            {update ? session.topics.map((item, index) => (
-              <Button key={item.id} type="button" variant="ghost"
-                aria-current={index === session.index && !session.finished ? 'step' : undefined} onClick={() => onTopic(item)}
+            {update ? session.topics.map(item => (
+              <Button key={item.id} type="button" variant="ghost" disabled={disabled}
+                aria-current={item.id === currentTopic ? 'step' : undefined} onClick={() => onTopic(item)}
                 title={item.title}>
                 {outcomes[item.id] === 'confirmed' ? <Check aria-hidden="true"/> : <Circle aria-hidden="true"/>}
                 <span>{item.title}</span><ArrowUpRight aria-hidden="true"/>

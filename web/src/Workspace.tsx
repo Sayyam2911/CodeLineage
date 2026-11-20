@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { decisionEvidence } from '@/lib/architecture'
+import { allowVoicePlayback } from '@/lib/voice-media'
 import { Diagram } from './Diagram'
 import { ClaimEntry, Coverage, EvidenceLinks, PriorReview, ReviewTopics } from './Review'
 import { SourceExcerpt } from './SourceExcerpt'
@@ -21,6 +22,11 @@ import { query, request } from './api'
 import type { Analysis, ChangeOptions, Claim, Edge, Evidence, Excerpt, Graph, Manifest, Node, Review, Revision, Session, SessionEvent, Topic, Turn } from './api'
 
 type Operation = ChangeOptions['operation']
+
+function activeReceipt(session: Session) {
+  const saved = session.latestReceipt
+  return saved && !session.pending && !session.finished && (saved.topicVersion ?? 0) === (session.topicVersion ?? 0) ? saved : null
+}
 
 export function Workspace({ initial, autoConnect, onExit }: { initial: Session; autoConnect: boolean; onExit: () => void }) {
   const [session, setSession] = useState(initial)
@@ -51,28 +57,36 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
   const [scopes, setScopes] = useState('')
   const [supersedes, setSupersedes] = useState('')
   const [exceptionTo, setExceptionTo] = useState('')
-  const [receipt, setReceipt] = useState<Revision | null>(initial.pending || initial.finished ? null : initial.latestReceipt ?? null)
+  const [historyTopic, setHistoryTopic] = useState<Topic | null>(null)
+  const [connectAfterSelection, setConnectAfterSelection] = useState(false)
   const appliedRevision = useRef(initial.latestReceipt?.revision ?? 0)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [applying, setApplying] = useState(false)
   const seq = useRef(initial.seq)
   const shownRevision = useRef(initial.revision)
+  const shownTopicVersion = useRef(initial.topicVersion ?? 0)
   const sourceSequence = useRef(0)
   const heading = useRef<HTMLHeadingElement>(null)
   const architecture = useRef<HTMLElement>(null)
   const path = '/sessions/' + session.id
   const snapshot = '/snapshots/' + session.snapshotId
   const topic = session.topics[session.index]
+  const topicVersion = session.topicVersion ?? 0
+  const receipt = activeReceipt(session)
   const interview = session.mode === 'update'
   const topicSource = topic?.evidence.find(item => item.kind === 'source')
-  const activeQuestion = interview && !session.finished && !receipt ? topic : undefined
+  const activeQuestion = interview && !session.finished && !receipt && !historyTopic ? topic : undefined
+  const displayedQuestion = historyTopic ?? activeQuestion
+  const displayedIndex = historyTopic ? session.topics.findIndex(item => item.id === historyTopic.id) : session.index
   const decision = graph?.claims.find(claim => claim.claimId === decisionId)
   const voice = useInterviewVoice({
-    sessionId: session.id, token: session.token, enabled: !session.finished && (!interview || !!topic), autoConnect,
+    sessionId: session.id, token: session.token, enabled: !session.finished && (!interview || !!session.topics.length),
+    autoConnect: autoConnect || connectAfterSelection, topicVersion, paused: !!historyTopic,
     topicId: activeQuestion?.id, announceTopic: !!activeQuestion && !session.pending,
   })
   const working = !!busy || voice.busy
+  const switchingDisabled = !!busy || applying || voice.presenting || voice.phase !== 'ready'
   const change: ChangeOptions | undefined = activeQuestion ? {
     operation, scope: scopes.trim() ? scopes.split(',').map(value => value.trim()).filter(Boolean) : null,
     targetId: selected, relatedId: related || null, label: changeLabel.trim() || null,
@@ -145,6 +159,13 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
     else setDecisionId(null)
   }
 
+  useEffect(() => {
+    if (shownTopicVersion.current === topicVersion) return
+    shownTopicVersion.current = topicVersion
+    setHistoryTopic(null)
+    if (!receipt) focusTopic(topic)
+  }, [topicVersion])
+
   function inspectDecision(claim: Claim) {
     sourceRequest.current?.abort()
     sourceSequence.current += 1
@@ -179,12 +200,14 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
   async function applied(change: Revision) {
     if (change.revision <= appliedRevision.current) return
     appliedRevision.current = change.revision
-    setReceipt(change)
     setOperation('annotate'); setChangeLabel(''); setRelated(''); setScopes(''); setSupersedes(''); setExceptionTo('')
     setApplying(true)
     try {
-      await Promise.all([loadGraph(change.revision), refresh(), loadTurns(), focusDecision(change.claim)])
-      architecture.current?.scrollIntoView({ block: 'nearest' })
+      const [state] = await Promise.all([refresh(), loadGraph(change.revision), loadTurns()])
+      if (activeReceipt(state)?.revision === change.revision) {
+        await focusDecision(change.claim)
+        architecture.current?.scrollIntoView({ block: 'nearest' })
+      }
     } catch (reason) {
       setError('Revision saved. Refresh failed: ' + (reason as Error).message)
     } finally {
@@ -204,7 +227,8 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
     if (interview) void request<Review>(snapshot + '/review', undefined, undefined, abort.signal)
       .then(setReview).catch(reason => { if (!cancelled) setError((reason as Error).message) })
     void loadTurns(abort.signal).catch(() => undefined)
-    if (initial.latestReceipt && !initial.pending) void focusDecision(initial.latestReceipt.claim)
+    const saved = initial.finished ? initial.latestReceipt : activeReceipt(initial)
+    if (saved) void focusDecision(saved.claim)
     else if (initial.evidenceFocus) void showEvidence(initial.evidenceFocus)
     else focusTopic(initial.topics[initial.index])
 
@@ -249,10 +273,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
             if (item.turn) includeTurn(item.turn)
             if (item.type === 'evidence.focus' && item.evidence) await showEvidence(item.evidence)
             if (item.type === 'revision.committed' && item.receipt) await applied(item.receipt)
-            else if (item.type.startsWith('proposal.') || item.type.startsWith('topic.') || item.type === 'session.finished') {
-              const state = await refresh()
-              if (item.type === 'topic.open') focusTopic(state.topics[state.index])
-            }
+            else if (item.type.startsWith('proposal.') || item.type.startsWith('topic.') || item.type === 'session.finished') await refresh()
           }
         }
       } catch {
@@ -281,6 +302,38 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
     } finally {
       setBusy('')
     }
+  }
+
+  function chooseTopic(item: Topic) {
+    if (switchingDisabled) return
+    setDetailsOpen(false); setError('')
+    if (session.pending && item.id !== topic?.id) {
+      setError('Confirm or interrupt the read-back before opening another question.')
+      return
+    }
+    if (session.finished || session.outcomes[item.id] === 'confirmed') {
+      setHistoryTopic(item)
+      const saved = graph?.claims.find(claim => claim.snapshotId === session.snapshotId && claim.topicId === item.id)
+      if (saved) void focusDecision(saved)
+      else focusTopic(item)
+      return
+    }
+    if (item.id === topic?.id && !receipt) {
+      setHistoryTopic(null)
+      focusTopic(item)
+      return
+    }
+    allowVoicePlayback()
+    void mutate<Session>('/topic', { topicId: item.id }, 'Opening question…', async state => {
+      setSession(previous => previous.seq > state.seq ? previous : { ...state, token: initial.token })
+      setConnectAfterSelection(true)
+    })
+  }
+
+  function returnToInterview() {
+    setHistoryTopic(null)
+    if (receipt) void focusDecision(receipt.claim)
+    else focusTopic(topic)
   }
 
   function selectNode(node: Node) {
@@ -348,16 +401,8 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
                 <SheetDescription>{session.repo}</SheetDescription>
               </SheetHeader>
               <div className="detail-groups">
-                <ReviewTopics session={session} claims={graph?.claims ?? []}
-                  onTopic={item => {
-                    const saved = graph?.claims.find(claim => claim.snapshotId === session.snapshotId && claim.topicId === item.id)
-                    if (saved) void focusDecision(saved)
-                    else {
-                      const ref = item.evidence.find(item => item.kind === 'source') ?? item.evidence[0]
-                      if (ref && !applying) showTopicEvidence(item, ref, false)
-                    }
-                    setDetailsOpen(false)
-                  }}
+                <ReviewTopics session={session} claims={graph?.claims ?? []} viewingTopic={historyTopic?.id}
+                  disabled={switchingDisabled} onTopic={chooseTopic}
                   onClaim={claim => {
                     if (!applying) void focusDecision(claim)
                     setDetailsOpen(false)
@@ -453,7 +498,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
               </div>}
               {graph
                 ? <Diagram graph={graph} manifest={manifest} anchor={anchor} selected={selected} selectedEdge={activeEdge}
-                    excerpt={sourceSnapshot === session.snapshotId ? excerpt : null} topic={activeQuestion} decision={decision}
+                    excerpt={sourceSnapshot === session.snapshotId ? excerpt : null} topic={displayedQuestion} decision={decision}
                     onEdge={selectEdge} onAnchor={id => { setDecisionId(null); setAnchor(id) }} onSelect={selectNode}
                     onSource={browseEvidence} onDecision={inspectDecision}/>
                 : <div className="panel-empty" aria-busy="true">
@@ -467,7 +512,7 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
                 <h2 id="source-title">Source evidence</h2>
                 {topic && topicSource && !receipt && !session.finished &&
                   <Button type="button" variant="ghost" size="sm"
-                    onClick={() => showTopicEvidence(topic, topicSource)}>Current topic</Button>}
+                    onClick={() => historyTopic ? returnToInterview() : showTopicEvidence(topic, topicSource)}>Current topic</Button>}
                 {excerpt && !evidenceNote && <Button asChild variant="ghost" size="icon-sm">
                   <a href={excerpt.url} target="_blank" rel="noreferrer" title="Open pinned lines on GitHub" aria-label="Open pinned lines on GitHub">
                     <ArrowUpRight aria-hidden="true"/>
@@ -545,17 +590,18 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
             </section>
           </div>
 
-          <section className="editor-panel interview-console" aria-labelledby="interview-title" data-receipt={!!receipt}>
+          <section className="editor-panel interview-console" aria-labelledby="interview-title" data-receipt={!!receipt || !!historyTopic}>
             <header className="panel-heading">
               <h2 id="interview-title">{interview ? 'Architecture interview' : 'Ask the lineage'}</h2>
-              {activeQuestion && <Badge variant="outline">Question {session.index + 1} of {session.topics.length}</Badge>}
+              {displayedQuestion && <Badge variant="outline">Question {displayedIndex + 1} of {session.topics.length}</Badge>}
+              {historyTopic && session.outcomes[historyTopic.id] === 'confirmed' && <Badge variant="secondary">Confirmed</Badge>}
             </header>
             <div className="interview-body">
               {error && <Alert variant="destructive" className="inline-notice">
                 <CircleAlert aria-hidden="true"/><AlertDescription>{error}</AlertDescription>
               </Alert>}
 
-              {interview && receipt && (
+              {interview && receipt && !historyTopic && (
                 <div className="claim-receipt">
                   <Alert className="inline-notice receipt" role="status">
                     <Check aria-hidden="true"/>
@@ -563,18 +609,22 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
                   </Alert>
                   <div className="receipt-actions">
                     <EvidenceLinks items={receipt.claim.evidence} onOpen={ref => void showEvidence(ref)}/>
-                    {topic && !session.finished && <Button type="button" size="sm" variant="secondary" disabled={working}
-                      onClick={() => { setReceipt(null); focusTopic(topic) }}>Next question <ArrowRight aria-hidden="true"/></Button>}
+                    {topic && <Button type="button" size="sm" variant="secondary" disabled={switchingDisabled}
+                      onClick={() => chooseTopic(topic)}>Next question <ArrowRight aria-hidden="true"/></Button>}
                   </div>
                 </div>
               )}
-              {activeQuestion && <article className="interview-question">
-                <h3>{activeQuestion.question}</h3>
-                <p>{activeQuestion.statement}</p>
-                <EvidenceLinks items={activeQuestion.evidence} onOpen={ref => showTopicEvidence(activeQuestion, ref, false)}/>
+              {displayedQuestion && <article className="interview-question">
+                <h3>{displayedQuestion.question}</h3>
+                <p>{displayedQuestion.statement}</p>
+                <EvidenceLinks items={displayedQuestion.evidence} onOpen={ref => historyTopic && decision
+                  ? void showEvidence(ref) : showTopicEvidence(displayedQuestion, ref, false)}/>
               </article>}
-              {interview && !session.finished && !topic && <p className="subtle">You’ve reached the end of the interview.</p>}
-              {session.pending && (
+              {historyTopic && !session.finished && <div className="controls">
+                <Button type="button" size="sm" variant="secondary" onClick={returnToInterview}>Return to interview</Button>
+              </div>}
+              {interview && !session.finished && !topic && !historyTopic && <p className="subtle">You’ve reached the end of the interview.</p>}
+              {session.pending && !historyTopic && (
                 <div className="readback">
                   <strong>Confirm the read-back</strong>
                   <p>{session.pending.summary}</p>
@@ -593,15 +643,12 @@ export function Workspace({ initial, autoConnect, onExit }: { initial: Session; 
                 </div>
               )}
 
-              {!session.finished && <div className="interview-actions">
+              {!session.finished && !historyTopic && <div className="interview-actions">
                 {(!interview || activeQuestion) && <VoiceControls voice={voice} interview={interview}
                   question={!!activeQuestion && !session.pending} correction={!!session.pending} change={change} busy={!!busy}/>}
                 {interview && <div className="controls bottom-controls">
-                  {activeQuestion && !session.pending && <Button type="button" variant="ghost" size="sm" disabled={working}
-                    onClick={() => void mutate<Session>('/skip', {}, 'Skipping…', async next => {
-                      setSession(previous => previous.seq > next.seq ? previous : { ...next, token: initial.token })
-                      focusTopic(next.topics[next.index])
-                    })}>Skip question</Button>}
+                  {activeQuestion && !session.pending && <Button type="button" variant="ghost" size="sm" disabled={switchingDisabled}
+                    onClick={() => void mutate('/skip', {}, 'Skipping…')}>Skip question</Button>}
                   <Button type="button" size="sm" variant="outline" disabled={working || !!session.pending}
                     onClick={() => void mutate('/finish', {}, 'Finishing…')}>Finish review</Button>
                 </div>}

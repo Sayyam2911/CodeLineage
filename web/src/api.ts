@@ -63,6 +63,7 @@ export type Session = {
   speaker: string
   topics: Topic[]
   index: number
+  topicVersion?: number
   outcomes: Record<string, string>
   seq: number
   revision: number
@@ -140,7 +141,7 @@ export type Scan = {
   snapshotId?: string
   reused?: boolean
 }
-export type Revision = { revision: number; claim: Claim }
+export type Revision = { revision: number; claim: Claim; topicVersion?: number }
 export type SessionEvent = { seq: number; revision: number; type: string; receipt?: Revision; evidence?: Evidence; turn?: Turn }
 
 export const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms))

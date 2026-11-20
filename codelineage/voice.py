@@ -267,11 +267,13 @@ def decision_context(interviews: Interviews, session: dict, question: str) -> di
 
 
 def speak_once(provider, interviews: Interviews, session_id: str, connection: dict,
-               turn_id: str, reply: str, source: dict | None):
+               turn_id: str, reply: str, source: dict | None, topic_version: int):
     with interviews.database.transaction(write=True) as records:
         active = records.get("voice", session_id)
+        session = records.get("sessions", session_id)
         if (not active or active["id"] != connection["id"] or active["state"] != "active"
-                or active["expiresAt"] <= time.time() or active.get("spokenToolTurn") == turn_id):
+                or active["expiresAt"] <= time.time() or active.get("spokenToolTurn") == turn_id
+                or session["finished"] or session.get("topicVersion", 0) != topic_version):
             return
         records.put("voice", session_id, active | {"spokenToolTurn": turn_id})
     provider.speak(connection, reply)
@@ -280,19 +282,20 @@ def speak_once(provider, interviews: Interviews, session_id: str, connection: di
             active = records.get("voice", session_id)
             session = records.get("sessions", session_id)
             if (active and active["id"] == connection["id"] and active["state"] == "active"
-                    and not session["finished"] and session.get("evidenceFocus") != source):
+                    and not session["finished"] and session.get("topicVersion", 0) == topic_version
+                    and session.get("evidenceFocus") != source):
                 session["evidenceFocus"] = source
                 event(records, session, "evidence.focus", evidence=source)
                 records.put("sessions", session_id, session)
 
 
 def speak_stalled_tool(gateway, interviews: Interviews, session_id: str, connection: dict,
-                       name: str, reply: str, source: dict | None):
+                       name: str, reply: str, source: dict | None, topic_version: int):
     try:
         provider = gateway()
         turn_id = stalled_tool_turn(provider.history(connection), name)
         if turn_id:
-            speak_once(provider, interviews, session_id, connection, turn_id, reply, source)
+            speak_once(provider, interviews, session_id, connection, turn_id, reply, source, topic_version)
     except Exception as exc:
         logger.warning("Agora %s speech recovery failed (%s).", name, getattr(exc, "status_code", type(exc).__name__))
 
@@ -307,12 +310,14 @@ class StartVoice(Connection):
 
 class QuestionPrompt(Connection):
     topicId: str
+    topicVersion: int | None = None
     repeat: bool = False
 
 
 class Capture(Connection):
     phase: Literal["recording", "submitted", "cancelled"]
     topicId: str | None = None
+    topicVersion: int | None = None
     change: ChangeOptions | None = None
 
 
@@ -404,7 +409,9 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
         with database.transaction(write=True) as records:
             session, connection = guided_connection(records, session_id, body.connectionId, authorization)
             topic = interviews.active_topic(session) if session["mode"] == "update" else None
-            if not topic or topic["id"] != body.topicId or session["pending"]:
+            topic_version = session.get("topicVersion", 0)
+            if (not topic or topic["id"] != body.topicId or session["pending"]
+                    or (body.topicVersion is not None and body.topicVersion != topic_version)):
                 raise HTTPException(409, "This interview question is no longer active.")
             if connection.get("promptedTopic") == topic["id"] and not body.repeat:
                 return {"spoken": False}
@@ -423,9 +430,12 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
     @router.post("/sessions/{session_id}/capture")
     def capture(session_id: str, body: Capture, authorization: str = Header(default="")):
         previous_turn = None
+        expected_version = body.topicVersion
         if body.phase == "recording":
             with database.transaction() as records:
-                _, connection = guided_connection(records, session_id, body.connectionId, authorization)
+                session, connection = guided_connection(records, session_id, body.connectionId, authorization)
+                if expected_version is None:
+                    expected_version = session.get("topicVersion", 0)
             try:
                 _, previous_turn = gateway().last_participant(connection)
             except HTTPException as exc:
@@ -435,15 +445,16 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
                 raise HTTPException(502, "The interviewer could not start this answer. Try the microphone again.") from exc
         with database.transaction(write=True) as records:
             session, connection = guided_connection(records, session_id, body.connectionId, authorization)
+            topic_id = interviews.active_topic(session)["id"] if session["mode"] == "update" else None
+            topic_version = session.get("topicVersion", 0)
+            if topic_id != body.topicId or (expected_version is not None and expected_version != topic_version):
+                raise HTTPException(409, "The interview moved to another question. Record a new answer.")
             if body.phase == "cancelled":
                 records.put("voice", session_id, connection | {"capture": None})
                 return {"recording": False}
-            topic_id = interviews.active_topic(session)["id"] if session["mode"] == "update" else None
-            if topic_id != body.topicId:
-                raise HTTPException(409, "The interview moved to another question. Record a new answer.")
             if body.phase == "recording":
                 state = {"topicId": topic_id, "previousTurn": previous_turn, "phase": body.phase,
-                         "change": body.change.model_dump() if body.change else {}}
+                         "topicVersion": topic_version, "change": body.change.model_dump() if body.change else {}}
             else:
                 state = connection.get("capture")
                 if not state or state["topicId"] != topic_id:
@@ -482,8 +493,10 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
                 return {"active": True}
             index, text = current
             captured = connection.get("capture") or {}
+            topic_version = session.get("topicVersion", 0)
             if connection.get("guided") and (
                 captured.get("phase") != "submitted" or captured.get("previousTurn") == participant_id(connection, index, text)
+                or captured.get("topicVersion", 0) != topic_version
                 or (session["mode"] == "update" and
                     (session["index"] >= len(session["topics"]) or
                      captured.get("topicId") != session["topics"][session["index"]]["id"]))
@@ -506,7 +519,7 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
                 reply, source = "Please review and confirm the summary on screen.", None
             else:
                 reply, source = lookup_reply(decision_context(interviews, session, text))
-            speak_once(provider, interviews, session_id, connection, turn_id, reply, source)
+            speak_once(provider, interviews, session_id, connection, turn_id, reply, source, topic_version)
         except (ApiError, HTTPError) as exc:
             status_code = getattr(exc, "status_code", None)
             if status_code == 404:
@@ -522,22 +535,28 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
             connection = records.get("voice", session_id)
         if connection["expiresAt"] <= time.time() or connection["state"] not in {"starting", "active"}:
             raise HTTPException(401, "The voice connection expired.")
+        topic_version = session.get("topicVersion", 0)
+        captured = connection.get("capture") or {}
 
         def tool_result(result: dict, reply: str, source: dict | None = None):
-            if connection.get("agentId"):
-                background.add_task(speak_stalled_tool, gateway, interviews, session_id, connection, name, reply, source)
+            if connection.get("agentId") and (not connection.get("guided") or captured):
+                background.add_task(speak_stalled_tool, gateway, interviews, session_id, connection, name, reply, source, topic_version)
             return {"tool": name, **result}
 
         if name == "getDecisionContext":
             result = decision_context(interviews, session, body.question)
             return tool_result(result, *lookup_reply(result))
         if name == "showEvidence":
+            if connection.get("guided") and session["mode"] == "update" and not captured:
+                raise HTTPException(409, "There is no recorded turn for the current question.")
             try:
                 excerpt = interviews.snapshots.source(session["snapshotId"], body.path, int(body.start), int(body.end))
             except (ValueError, FileNotFoundError) as exc:
                 raise HTTPException(422, "Choose valid numbered source lines from the current snapshot.") from exc
             with database.transaction(write=True) as records:
                 session = interviews.authorize(records, session_id, authorization, voice=True)
+                if session.get("topicVersion", 0) != topic_version:
+                    raise HTTPException(409, "The interview moved to another question.")
                 focus = {"kind": "source", "path": body.path, "start": int(body.start), "end": int(body.end),
                          "snapshotId": session["snapshotId"]}
                 if session.get("evidenceFocus") != focus:
@@ -559,10 +578,10 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
                 "status": "pending", "message": "Ask the participant to review and confirm the exact summary on screen.",
             }, "Please review and confirm the summary on screen.")
         interviews.writable(session)
-        captured = connection.get("capture") or {}
         if connection.get("guided") and (
             captured.get("phase") not in {"recording", "submitted"}
             or captured.get("topicId") != interviews.active_topic(session)["id"]
+            or captured.get("topicVersion", 0) != topic_version
         ):
             raise HTTPException(409, "Ask the participant to record an answer to the current question first.")
         if not body.summary.strip():
@@ -584,6 +603,7 @@ def voice_routes(interviews: Interviews, gateway=AgoraVoice) -> APIRouter:
         updated = interviews.stage(
             session_id, authorization, Answer(text=body.summary, **captured.get("change", {})),
             voice_answer=answer, voice_turn=turn_id, expected_topic=captured.get("topicId"),
+            expected_topic_version=topic_version,
         )
         proposal = updated["pending"]
         instruction = "Please review and confirm the summary on screen."

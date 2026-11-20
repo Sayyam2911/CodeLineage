@@ -189,7 +189,7 @@ def test_guided_voice_replays_active_question_and_requires_a_new_recorded_answer
         assert started.status_code == 200
         agent = {"Authorization": "Bearer " + gateway.token}
         proposal = "/voice/tools/" + session["id"] + "/proposeChange"
-        question = connection | {"topicId": topic["id"]}
+        question = connection | {"topicId": topic["id"], "topicVersion": session["topicVersion"]}
         assert client.post(voice + "/prompt", headers=agent, json=question).status_code == 401
         assert client.post(voice + "/prompt", headers=browser, json=question | {"topicId": "stale"}).status_code == 409
         assert client.post(voice + "/prompt", headers=browser, json=question).json() == {"spoken": True}
@@ -204,11 +204,22 @@ def test_guided_voice_replays_active_question_and_requires_a_new_recorded_answer
         assert client.post(voice + "/capture", headers=agent, json=capture).status_code == 401
         assert client.post(voice + "/capture", headers=browser, json=capture).json() == {"recording": True}
         assert client.post(proposal, headers=agent, json=change).status_code == 409
+        select = "/sessions/" + session["id"] + "/topic"
+        next_topic = {"topicId": session["topics"][1]["id"]}
+        assert client.post(select, headers=browser, json=next_topic).status_code == 409
         assert client.post(voice + "/capture", headers=browser, json=question | {"phase": "submitted"}).json() == {"recording": False}
         assert client.post(proposal, headers=agent, json=change).status_code == 409
+        assert client.post(select, headers=browser, json=next_topic).status_code == 200
+        returned = client.post(select, headers=browser, json={"topicId": topic["id"]}).json()
+        assert client.post(voice + "/prompt", headers=browser, json=question).status_code == 409
+        assert client.post(voice + "/capture", headers=browser, json=question | {"phase": "submitted"}).status_code == 409
+        fresh = question | {"topicVersion": returned["topicVersion"]}
+        assert client.post(voice + "/prompt", headers=browser, json=fresh).json() == {"spoken": True}
+        assert client.post(voice + "/capture", headers=browser, json=capture | fresh).json() == {"recording": True}
+        assert client.post(voice + "/capture", headers=browser, json=fresh | {"phase": "submitted"}).status_code == 200
 
         gateway.participant = ("We keep duplicate deliveries out of the queue.", "new-turn")
         staged = client.post(proposal, headers=agent, json=change)
         assert staged.status_code == 200, staged.text
         assert "Scope: module_0.py" in staged.json()["summary"]
-        assert client.post(voice + "/prompt", headers=browser, json=question | {"repeat": True}).status_code == 409
+        assert client.post(voice + "/prompt", headers=browser, json=fresh | {"repeat": True}).status_code == 409
