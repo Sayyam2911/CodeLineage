@@ -1,0 +1,77 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: codelineage-cloud-run
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      REGION: ${{ vars.GCP_REGION }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Run backend tests
+        run: |
+          python -m pip install uv==0.13.6
+          uv run --locked pytest -q
+      - name: Build and smoke-test the Linux image
+        run: |
+          docker build --platform linux/amd64 --tag "codelineage:${GITHUB_SHA}" .
+          docker run --rm --network=none -i "codelineage:${GITHUB_SHA}" - --container < deploy/smoke.py
+      - name: Check deployment configuration
+        id: target
+        run: |
+          if [[ -z "$PROJECT" || -z "$PROJECT_NUMBER" || -z "$REGION" ]]; then
+            echo 'Cloud Run deployment awaits the GitHub Actions variables from python -m deploy.configure_ci.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
+      - name: Authenticate to Google Cloud
+        if: steps.target.outputs.enabled == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ env.PROJECT }}
+          workload_identity_provider: projects/${{ env.PROJECT_NUMBER }}/locations/global/workloadIdentityPools/codelineage-github/providers/github
+          service_account: codelineage-ci@${{ env.PROJECT }}.iam.gserviceaccount.com
+      - name: Set up gcloud
+        if: steps.target.outputs.enabled == 'true'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Publish and deploy the tested image
+        if: steps.target.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo 'A newer main commit superseded this deployment.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          registry="${REGION}-docker.pkg.dev"
+          repository="${registry}/${PROJECT}/codelineage/codelineage"
+          tag="${repository}:${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gcloud auth configure-docker "$registry" --quiet
+          docker tag "codelineage:${GITHUB_SHA}" "$tag"
+          docker push "$tag"
+          digest=$(gcloud artifacts docker images describe "$tag" --project="$PROJECT" --format='value(image_summary.digest)')
+          python -m deploy.rollout --project "$PROJECT" --region "$REGION" --image "${repository}@${digest}" \
+            --revision-suffix "ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"

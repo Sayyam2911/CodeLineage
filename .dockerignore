@@ -7,6 +7,7 @@
 web/dist
 .env
 .env.*
+gha-creds-*.json
 web/.next
 web/next-env.d.ts
 web/*.tsbuildinfo

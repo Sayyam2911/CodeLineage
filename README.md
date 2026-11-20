@@ -73,6 +73,20 @@ To exercise the hosted voice flow, open the service URL, confirm an answer in **
 
 The scan job uploads immutable artifacts and writes the completion manifest last. The backend checks the manifest and archive checksum before reading source. Cloud Tasks resume analysis in bounded steps tied to a scan attempt, and rerunning a step reuses its checkpoint. Confirmation commits the claim, its evidence, the receipt and the event in a single Neo4j transaction.
 
+### Deploy automatically from GitHub
+
+After the first Cloud Run deployment, run this once from the repository root with `gcloud` signed in. Use the project and region where the `codelineage` service and `codelineage-scan` job are deployed.
+
+~~~sh
+python -m deploy.configure_ci --project YOUR_PROJECT_ID --region us-central1
+~~~
+
+In GitHub, open **Settings → Secrets and variables → Actions → Variables**. Add the three repository variables printed by the command. The workflow authenticates with short-lived Google credentials tied to this repository and its `main` workflow. Cloud Run reads runtime secrets from Secret Manager. [Actions variables](https://github.com/Sayyam2911/CodeLineage/settings/variables/actions) · [Workload Identity Federation](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)
+
+Run **Deploy to Cloud Run** from the **Actions** tab on `main` to test the connection. Subsequent pushes to `main` run backend tests and a container smoke test. The workflow stages a new API revision, updates the scan job to the same image digest, then routes traffic to that revision. If the rollout or hosted smoke test fails, it attempts to restore the previous traffic split and scan job image. [Deployment workflow](https://github.com/Sayyam2911/CodeLineage/actions/workflows/deploy-cloud-run.yml) · [Cloud Run traffic migration](https://docs.cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration)
+
+### Inspect the graph
+
 With Neo4j configured, each completed scan publishes a commit-pinned graph of files, components, extracted and inferred relationships, and review findings. Opening an existing snapshot publishes its graph if needed. The diagram and interview context use this topology, and source excerpts are read from the pinned snapshot artifacts. Start a Cypher graph view at a repository to see the connected data.
 
 ~~~cypher
