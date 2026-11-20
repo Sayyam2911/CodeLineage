@@ -187,7 +187,7 @@ class Snapshots:
                       for number in range(max(1, start - context), min(len(lines), end + context) + 1)],
         }
 
-    def config_implementation(self, snapshot: str, citation: dict) -> dict | None:
+    def config_implementation(self, snapshot: str, citation: dict, *, context: int) -> dict | None:
         if PurePosixPath(citation["path"]).name not in {".env.example", ".env.sample", ".env.template"}:
             return None
         highlight = citation["highlight"]
@@ -213,11 +213,11 @@ class Snapshots:
                 for pattern in fallbacks:
                     if match := pattern.search(line):
                         if match[1] == "config":
-                            return self.source(snapshot, path, number, number, context=4)
+                            return self.source(snapshot, path, number, number, context=context)
                         environment_lookup = environment_lookup or (path, number)
         if environment_lookup:
             path, number = environment_lookup
-            return self.source(snapshot, path, number, number, context=4)
+            return self.source(snapshot, path, number, number, context=context)
         return None
 
     def capture(self, repo: str, commit: str, scope: str) -> dict:

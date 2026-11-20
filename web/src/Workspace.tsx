@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { Diagram } from './Diagram'
 import { ClaimEntry, Coverage, EvidenceLinks, PriorReview, ReviewTopics } from './Review'
+import { SourceExcerpt } from './SourceExcerpt'
 import { Voice } from './Voice'
 import { query, request } from './api'
 import type { Analysis, Context, Edge, Evidence, Excerpt, Graph, Manifest, Node, Review, Revision, Session, SessionEvent, Topic, Turn } from './api'
@@ -96,7 +97,7 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
     try {
       const data = await request<Excerpt>(query('/snapshots/' + evidenceSnapshot + '/source', {
         path: ref.path, start: ref.start, ...(ref.end ? { end: ref.end } : {}),
-        ...(ref.end ? { context: 4 } : {}), ...(followConfig ? { follow_config: true } : {}),
+        ...(ref.end ? { context: 7 } : {}), ...(followConfig ? { follow_config: true } : {}),
       }), undefined, undefined, controller.signal)
       if (requestId === sourceSequence.current) {
         const displayed = data.implementation ?? data
@@ -315,13 +316,15 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
 
   const sourceFiles = useMemo(() => manifest
     ? Object.keys(manifest.files).filter(name => manifest.files[name].text) : [], [manifest])
-  const sourceCommit = excerpt?.commit ?? manifest?.commit
+
+  function browseEvidence(ref: Evidence) {
+    setAnchor(null); setSelected(null); setActiveEdge(null)
+    void showEvidence(ref)
+  }
 
   function openSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!file) return
-    setAnchor(null); setSelected(null); setActiveEdge(null)
-    void showEvidence({ kind: 'source', path: file, start: first, end: last || undefined, snapshotId: sourceSnapshot })
+    if (file) browseEvidence({ kind: 'source', path: file, start: first, end: last || undefined, snapshotId: sourceSnapshot })
   }
 
   return (
@@ -396,9 +399,9 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                 <LoaderCircle className="animate-spin" aria-hidden="true" size={14}/> Applying graph revision…
               </div>}
               {graph
-                ? <Diagram graph={graph} anchor={anchor} selected={selected} selectedEdge={activeEdge}
-                    excerpt={sourceSnapshot === session.snapshotId ? excerpt : null}
-                    onEdge={selectEdge} onAnchor={setAnchor} onSelect={selectNode}/>
+                ? <Diagram graph={graph} manifest={manifest} anchor={anchor} selected={selected} selectedEdge={activeEdge}
+                    excerpt={sourceSnapshot === session.snapshotId ? excerpt : null} topic={topic}
+                    onEdge={selectEdge} onAnchor={setAnchor} onSelect={selectNode} onSource={browseEvidence}/>
                 : <div className="panel-empty" aria-busy="true">
                     <Skeleton className="graph-skeleton"/><span>Loading architecture…</span>
                   </div>}
@@ -425,7 +428,7 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                 <CollapsibleTrigger asChild>
                   <Button type="button" variant="ghost" className="source-browser-trigger">
                     <FileCode2 aria-hidden="true"/>
-                    <span>{file || 'Browse source files'}</span>
+                    <span>Browse source files</span>
                     <ChevronDown aria-hidden="true" className="source-browser-chevron"/>
                   </Button>
                 </CollapsibleTrigger>
@@ -476,22 +479,7 @@ export function Workspace({ initial, onExit }: { initial: Session; onExit: () =>
                       </Button>}
                     </article>
                   : excerpt
-                    ? <div className="code">
-                        <div className="code-meta">
-                          <code title={excerpt.path}>{excerpt.path}</code>
-                          <Badge variant="outline" className="commit-tag" title={sourceCommit}>
-                            {sourceCommit?.slice(0, 7)}{sourceSnapshot !== session.snapshotId ? ' · previous' : ''}
-                          </Badge>
-                        </div>
-                        <div className="code-scroll" role="region" aria-label="Pinned source lines" tabIndex={0}>
-                          {excerpt.lines.map(line => <div className={
-                            !excerpt.highlight || (line.number >= excerpt.highlight.start && line.number <= excerpt.highlight.end)
-                              ? 'code-row cited' : 'code-row'
-                          } key={line.number}>
-                            <span>{line.number}</span><code>{line.text || ' '}</code>
-                          </div>)}
-                        </div>
-                      </div>
+                    ? <SourceExcerpt excerpt={excerpt} previous={sourceSnapshot !== session.snapshotId}/>
                     : <div className="panel-empty">
                         <SquareTerminal aria-hidden="true" size={24}/>
                         <p>Select a component or open a source file to see its evidence.</p>

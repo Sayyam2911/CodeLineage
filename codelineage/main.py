@@ -131,7 +131,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         context: int = Query(default=0, ge=0, le=12), follow_config: bool = False):
         try:
             excerpt = snapshots.source(id_, path, start, end, context=context)
-            if follow_config and (implementation := snapshots.config_implementation(id_, excerpt)):
+            if follow_config and (implementation := snapshots.config_implementation(id_, excerpt, context=context)):
                 excerpt["implementation"] = implementation
             return excerpt
         except FileNotFoundError as exc:

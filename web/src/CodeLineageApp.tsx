@@ -54,7 +54,7 @@ export default function CodeLineageApp() {
   return (
     <TooltipProvider delayDuration={200}>
       <a href="#main-content" className="skip-link">Skip to content</a>
-      <header className="topbar">
+      <header className={session ? 'topbar workspace-topbar' : 'topbar'}>
         <div className="topbar-content">
           <Button type="button" variant="ghost" className="brand" onClick={exit} aria-label="CodeLineage home">
             <Workflow aria-hidden="true" className="brand-mark"/>

@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import type { ReactNode } from 'react'
 import '@fontsource-variable/geist'
+import '@fontsource-variable/geist-mono'
 import '@xyflow/react/dist/style.css'
 import '../src/styles.css'
 

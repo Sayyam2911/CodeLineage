@@ -6,6 +6,7 @@ import {
   useNodesInitialized, useReactFlow, useStore,
 } from '@xyflow/react'
 import type { Edge, FitViewOptions, Node, NodeProps, XYPosition } from '@xyflow/react'
+import type { DiagramRole } from '@/lib/architecture'
 import { cn } from '@/lib/utils'
 
 type ComponentData = {
@@ -14,6 +15,7 @@ type ComponentData = {
   icon?: LucideIcon
   active?: boolean
   confirmed?: boolean
+  role?: DiagramRole
   inspect: () => void
   center?: () => void
 }
@@ -28,8 +30,8 @@ const minimumZoom = 0.32
 const maximumZoom = 1.85
 
 export function componentNode(id: string, position: XYPosition, data: ComponentData, compact = false): ArchitectureNode {
-  const width = compact ? 152 : 172
-  const height = compact ? 41 : 49
+  const width = compact ? 152 : data.role ? 190 : 172
+  const height = compact ? 41 : data.role ? 59 : 49
   const handles = ports.map(port => ({
     ...port, width: 2, height: 2,
     x: port.position === Position.Left ? 0 : port.position === Position.Right ? width - 2 : width / 2 - 1,
@@ -82,7 +84,8 @@ export function componentConnection({
 function Component({ data }: NodeProps<ArchitectureNode>) {
   const Icon = data.icon
   return (
-    <button type="button" className="architecture-node nopan nodrag" aria-label={data.label}
+    <button type="button" className="architecture-node nopan nodrag" data-role={data.role}
+      data-confirmed={data.confirmed || undefined} aria-label={data.label}
       aria-pressed={!!data.active} title={data.subtitle ? data.label + ' · ' + data.subtitle : data.label}
       onClick={data.inspect} onDoubleClick={data.center}>
       {Icon ? <Icon aria-hidden="true" size={15}/> : <span aria-hidden="true" className={cn('node-dot', data.confirmed && 'confirmed')}/>}
