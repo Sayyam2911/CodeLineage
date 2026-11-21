@@ -1,13 +1,95 @@
 # CodeLineage
 
-CodeLineage records the reasons behind architecture decisions. Start with a public GitHub URL, review a commit-pinned diagram and its evidence, and confirm the scope of an explanation. A fresh session can then retrieve the reviewed explanation and its evidence.
+**Voice-first architecture interviews for GitHub repositories.**
 
-- [Build plan and acceptance](MILESTONES.md)
-- [Architecture and product decisions](Agora-Design-Decisions.md)
+CodeLineage turns a public repository into an interactive architecture map with source evidence pinned to a commit. The interviewer talks through the decisions the repository leaves open. Confirmed explanations become searchable decisions linked to the code and the interview.
+
+[Open the live app](https://codelineage-872637673792.us-central1.run.app/)
+
+![CodeLineage homepage with the voice review and exploration actions above an interactive architecture and source preview](docs/screenshots/home.png)
+
+## What you can do
+
+1. **Scan a public repository.** Paste a GitHub URL and optionally choose a ref or directory. Graphify extracts the code structure. Muse Spark reads batches of pinned source, tests, and documentation to suggest decisions worth discussing.
+2. **Talk through the open decisions.** The interviewer reads the prepared question and pauses while you look at the diagram and evidence. Use **Answer question** to open the mic and **Finish answer** to submit your reasoning.
+3. **Review and save the decision.** Check the read-back, choose **I reviewed this summary**, then **Confirm and save**. CodeLineage records the decision, its scope, and its evidence in a new graph revision.
+4. **Ask about the reviewed code.** Open **Explore reviewed code** for a repository with saved decisions. Ask a question aloud to retrieve the relevant explanation and its pinned source.
+
+For a walkthrough, choose **Start a voice review**, **Use the Healthchecks demo**, then **Open review**. The first question covers the trade-off for alert channels without delivery history. The interview screenshots show an example review of a small to-do app. [To-do app source](https://github.com/mwh-max/to-do-list-vanilla-js)
+
+## Screenshots
+
+### Voice interview with pinned evidence
+
+The workspace shows the interviewer, the relevant architecture, and highlighted source lines for the current question.
+
+![Voice interview workspace for the to-do app showing a question about leaving an edit, the architecture map, highlighted JavaScript, and the microphone controls](docs/screenshots/voice-review.png)
+
+### Decision read-back
+
+The proposed decision appears with its scope and confirmation controls. The interview transcript becomes evidence for the saved decision after approval.
+
+![Decision read-back proposing that unfinished edits be canceled when the user clicks away, with review and confirmation controls](docs/screenshots/read-back.png)
+
+## System architecture
+
+The API resolves the GitHub ref to a commit and dispatches the scan job. The job captures the source and extracts its structure before queuing semantic review.
+
+```mermaid
+flowchart TB
+    github["Public GitHub repository"] -->|Pinned commit archive| job["Cloud Run scan job<br/>Repository capture and Graphify"]
+    job --> storage["Cloud Storage<br/>Source, graph, and manifest"]
+    job --> queue["Cloud Tasks<br/>Analysis work"]
+    storage -->|Pinned artifacts| api["FastAPI on Cloud Run"]
+    queue -->|Resume each step| api
+    api <-->|HTTPS and session events| browser["Next.js browser workspace"]
+    api <-->|Code evidence and findings| muse["Meta Muse Spark"]
+    api <-->|Structure and decisions| aura["Neo4j AuraDB"]
+```
+
+Muse suggests questions where the reason behind a decision remains unclear in the excerpts. The API checks each cited quote against the captured commit. Neo4j stores model findings and participant-confirmed decisions with their respective evidence.
+
+## Agora and Murf AI
+
+- **Agora RTC** connects the browser microphone and the agent’s audio in a live room. The API issues expiring room credentials.
+- **Agora Conversational AI** runs the voice pipeline, including speech recognition, the conversation model, and session-scoped HTTPS tools. The agent can look up decisions, focus the source panel, and propose a draft.
+- **Murf AI Falcon** is the pipeline’s text-to-speech provider. It speaks the interviewer’s questions, read-backs, and answers about previously reviewed code.
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant API as CodeLineage API
+    participant Agora as Agora voice agent
+    participant Murf as Murf Falcon
+    participant Store as Neo4j
+
+    Browser->>API: Request room credentials
+    API-->>Browser: Return expiring RTC token
+    Browser->>Agora: Join Agora RTC room
+    Browser->>API: Start the guided interview
+    API->>Agora: Start agent with session tools
+    API->>Agora: Speak the prepared question
+    Agora->>Murf: Synthesize the prompt
+    Murf-->>Agora: Return speech audio
+    Agora-->>Browser: Play prompt over RTC
+    Browser->>Agora: Stream the participant's answer
+    Agora->>API: Propose a decision
+    API->>Agora: Verify finalized transcript
+    API-->>Browser: Show the draft for review
+    API-->>Agora: Return the proposed summary
+    Agora->>Murf: Synthesize the read-back
+    Murf-->>Agora: Return speech audio
+    Agora-->>Browser: Play the read-back over RTC
+    Browser->>API: Acknowledge and confirm the read-back
+    API->>Store: Commit the revision and evidence
+    API-->>Browser: Publish the saved revision
+```
+
+The API verifies a new Agora transcript before staging the proposed decision. Confirming the read-back in the browser commits the graph revision. [Agora and Murf integration guide](https://docs.agora.io/en/ai/platform/models/tts/murf) · [Murf streaming speech](https://murf.ai/api/docs/text-to-speech/streaming)
 
 ## Run locally
 
-Use Git, Python 3.12+, uv, and Node.js 22+.
+Use Git, Python 3.12–3.14, uv, and Node.js 22 or later.
 
 ~~~sh
 uv sync --locked
@@ -16,82 +98,67 @@ npm --prefix web run build
 uv run --locked uvicorn codelineage.main:app --host 127.0.0.1 --port 8000
 ~~~
 
-Open `http://localhost:8000` in a browser. FastAPI serves the static export from the Next.js App Router. For development with live reload, keep the backend running and start `npm --prefix web run dev` in a second terminal. Open `http://localhost:3000`. The Next.js development server forwards API requests and the event stream to FastAPI. Set `CODELINEAGE_API_ORIGIN` for a different backend origin or `CODELINEAGE_DATA` for a different database and snapshot directory.
+Open [localhost:8000](http://localhost:8000). FastAPI serves the static Next.js export. For frontend hot reload, keep FastAPI running, start `npm --prefix web run dev` in another terminal, and open [localhost:3000](http://localhost:3000). Set `CODELINEAGE_API_ORIGIN` if the frontend should proxy to a different backend.
 
-With voice configured, choose **Start a voice review**, then **Use the Healthchecks demo** and **Open review**. With the ref left empty, the demo resolves to Healthchecks v5.0.3. The interviewer reads the first question, shows the pinned alert ordering code, and pauses. Select **Answer question** and allow microphone access, then select **Finish answer** when you’re done. Review the proposed summary on screen, record a correction if needed, or select **Confirm and save**. **Next question** opens and reads the next prompt. Choose **Explore reviewed code** to ask why new webhook channels wait, or ask to see the corresponding source.
+### Configure voice and semantic review
+
+Copy [`.env.example`](.env.example) to `.env`. Publish an agent in Agora AI Studio with speech recognition, a conversation model, and **Murf Falcon** as text-to-speech. Use the App ID and App Certificate for the project that owns the published agent. [Connect a published Agora agent](https://docs.agora.io/en/ai/studio/deploy/connect-agent)
+
+| Setting | What it configures |
+| --- | --- |
+| `AGORA_APP_ID` and `AGORA_APP_CERTIFICATE` | Agora project and server-side token signing. |
+| `AGORA_PIPELINE_ID` | Published Studio pipeline. CodeLineage attaches its interview instructions and tools when it starts the agent. |
+| `CODELINEAGE_PUBLIC_URL` | Public HTTPS origin Agora can reach for `/voice/tools/…`. Use a tunnel or a deployed service when the API runs locally. |
+| `CODELINEAGE_ANALYSIS_PROVIDER` and `CODELINEAGE_ANALYSIS_KEY` | Set the provider to `meta` and supply a Meta Model API key for Muse Spark. An OpenAI key with provider `openai` also works. |
+| `CODELINEAGE_ANALYSIS_BATCHES` | Maximum number of semantic analysis batches. The default is 40. |
+| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, and `NEO4J_DATABASE` | Neo4j persistence. Local development can use SQLite and local snapshot files when the URI is empty. |
+
+With the Studio pipeline, set the Murf voice and credentials in Studio. For direct server configuration, leave `AGORA_PIPELINE_ID` empty and set `MURF_API_KEY` and `MURF_VOICE_ID`. The direct path uses Deepgram for transcription and `FALCON` for speech synthesis by default. It supports `DEEPGRAM_API_KEY`, `MURF_MODEL`, and the optional `CODELINEAGE_VOICE_MODEL` and `CODELINEAGE_VOICE_MODEL_KEY` settings.
+
+The Meta configuration defaults to `muse-spark-1.3-contributor`. Use public source without sensitive data because Meta may use Contributor inputs for training. Set `CODELINEAGE_ANALYSIS_MODEL` to override the model. Scans show partial coverage when they reach the analysis budget. [Muse Spark](https://dev.meta.ai/docs/muse-spark)
+
+Start FastAPI with the environment file.
+
+~~~sh
+uv run --locked --env-file .env uvicorn codelineage.main:app --host 127.0.0.1 --port 8000
+~~~
+
+## Deploy to Cloud Run
+
+Use a billing-enabled Google Cloud project, an authenticated `gcloud` CLI, and the AuraDB and Agora Studio settings in `.env`. The deploy script provisions the service, scan job, task queue, and private snapshot storage. It loads runtime credentials from Secret Manager and sets the Cloud Run HTTPS origin for Agora callbacks.
+
+~~~sh
+python deploy/google_cloud.py --check
+python deploy/google_cloud.py --project YOUR_PROJECT_ID --region us-central1
+python deploy/smoke.py https://YOUR_SERVICE_URL --voice --scan
+~~~
+
+Use `--env-file PATH` to load another environment file or `--rotate-secrets` to publish new credential versions.
+
+To configure continuous deployment after the first rollout, run the following command and add its printed variables under **Settings → Secrets and variables → Actions → Variables** in GitHub.
+
+~~~sh
+python -m deploy.configure_ci --project YOUR_PROJECT_ID --region us-central1
+~~~
+
+The **Deploy to Cloud Run** workflow runs tests and a container smoke test on pushes to `main`. It stages the API revision and updates the scan job to the tested image digest before routing traffic. A failed rollout attempts to restore the previous traffic split and job image. [Deployment workflow](.github/workflows/deploy-cloud-run.yml)
+
+## Tests and graph inspection
 
 ~~~sh
 uv run --locked pytest
 npm --prefix web run build
 ~~~
 
-Set `CODELINEAGE_TEST_NEO4J_URI` for the Neo4j integration test. Set `CODELINEAGE_TEST_NEO4J_USER` and `CODELINEAGE_TEST_NEO4J_PASSWORD` to its credentials, and `CODELINEAGE_TEST_NEO4J_DATABASE` if its database name differs from `neo4j`. An empty username selects an unauthenticated test instance. The test uses a uniquely named synthetic repository and removes its records afterward.
+Set `CODELINEAGE_TEST_NEO4J_URI` and the matching `CODELINEAGE_TEST_NEO4J_USER`, `CODELINEAGE_TEST_NEO4J_PASSWORD`, and `CODELINEAGE_TEST_NEO4J_DATABASE` values to enable the Neo4j integration test. It uses a synthetic repository and removes its own records.
 
-## Semantic analysis and voice
-
-Local development defaults to structural interview topics. Copy [`.env.example`](.env.example) to `.env` for semantic analysis and voice, then start the service with the environment file.
-
-~~~sh
-uv run --locked --env-file .env uvicorn codelineage.main:app --host 127.0.0.1 --port 8000
-~~~
-
-Set `CODELINEAGE_ANALYSIS_PROVIDER=meta` and put your Meta Model API key in `CODELINEAGE_ANALYSIS_KEY`. CodeLineage sends public source excerpts to the Responses API using `muse-spark-1.3-contributor`. Meta may use Contributor inputs for model training. Use public demo source without sensitive or personal data. For OpenAI, set the provider to `openai` and supply its key. You can override either default model with `CODELINEAGE_ANALYSIS_MODEL`. The default analysis budget is 40 batches. Results report partial coverage at the budget limit, and inference citations must match the pinned source. [Meta Model API](https://dev.meta.ai/docs/muse-spark)
-
-In Agora AI Studio, publish an agent with Murf Falcon selected as text-to-speech. Copy its Pipeline ID and use the App ID and App Certificate from the same project. Keep the certificate and API keys on the server. The browser can use localhost for microphone access. Agora needs a reachable HTTPS endpoint for `POST /voice/tools/...`.
-
-| Variable | Purpose |
-| --- | --- |
-| `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE` | Agora project with Conversational AI enabled and token signing |
-| `AGORA_PIPELINE_ID` | Published Studio pipeline with Murf Falcon. CodeLineage adds its interview instructions and tools to each session. |
-| `CODELINEAGE_PUBLIC_URL` | HTTPS base URL that Agora can call for tools |
-| `MURF_API_KEY`, `MURF_VOICE_ID` | Used for direct provider configuration when `AGORA_PIPELINE_ID` is empty |
-| `MURF_MODEL`, `DEEPGRAM_API_KEY` | Optional direct provider settings. The Murf model defaults to `FALCON`. |
-| `CODELINEAGE_VOICE_MODEL`, `CODELINEAGE_VOICE_MODEL_KEY` | Optional direct OpenAI voice-turn settings. The default is Agora-managed `gpt-4o-mini`. |
-
-The browser opens the microphone when the participant chooses to speak and releases it when the participant finishes or the interviewer replies. The server issues expiring RTC tokens and separate, session-bound tool credentials. Agora can open source evidence and propose an interview change using the participant's live answer. The browser displays the exact summary for explicit approval and the agent checks the saved receipt.
-
-Use **Play question** to resume audio after a reload and **Repeat question** to hear the current prompt again. Select **End audio** to disconnect. [Agora Studio connection guide](https://docs.agora.io/en/ai/studio/deploy/connect-agent) · [Agora Python quickstart](https://github.com/AgoraIO-Conversational-AI/agent-quickstart-python/tree/bd1af724bed885c39a5a57235b37ec3bb3fd6396)
-
-## Managed deployment
-
-Use Python 3.10+, an authenticated Google Cloud CLI, and a billing-enabled project where you can enable APIs, create resources, and grant IAM roles. Put your Aura and Agora Studio settings in the gitignored `.env` using the names in `.env.example`. Set `CODELINEAGE_ANALYSIS_KEY` to enable model-based review.
-
-~~~sh
-python deploy/google_cloud.py --check
-python deploy/google_cloud.py --project YOUR_PROJECT_ID --region us-central1
-~~~
-
-The command builds and tests a Linux image in Cloud Build and deploys its digest to both the public Cloud Run service and the scan job. It configures Artifact Registry, private build and snapshot buckets, the analysis queue, and separate service accounts. The API gets its credentials from numbered Secret Manager versions and uses its Cloud Run HTTPS URL for Agora callbacks. The API independently verifies the Google-issued OIDC token on each analysis task. The command reuses provisioned resources on later runs. Pass `--env-file PATH` for a different env file or `--rotate-secrets` to publish new credential versions. [Cloud Run container contract](https://docs.cloud.google.com/run/docs/container-contract) · [Cloud Tasks authentication](https://docs.cloud.google.com/tasks/docs/creating-http-target-tasks)
-
-The deployment prints the service URL after checking the homepage, health endpoint, task authentication, and voice configuration. Run the Healthchecks smoke test against that URL to verify the scan job, Cloud Storage artifacts, Aura-backed diagram, and source lines. A snapshot captured locally gets its Cloud Storage copy on the first hosted scan.
-
-~~~sh
-python deploy/smoke.py https://YOUR_SERVICE_URL --voice --scan
-~~~
-
-To exercise the hosted voice flow, open the service URL, confirm an answer in **Start a voice review**, and ask for its rationale in a fresh **Explore reviewed code** session. To build the image locally, run `docker build -t codelineage:local .`. On a development network with a proxy CA, pass `--secret id=proxy_ca,src=/etc/ssl/certs/ca-certificates.crt` to Docker so the package installs can verify TLS.
-
-The scan job uploads immutable artifacts and writes the completion manifest last. The backend checks the manifest and archive checksum before reading source. Cloud Tasks resume analysis in bounded steps tied to a scan attempt, and rerunning a step reuses its checkpoint. Confirmation commits the claim, its evidence, the receipt and the event in a single Neo4j transaction.
-
-### Deploy automatically from GitHub
-
-After the first Cloud Run deployment, run this once from the repository root with `gcloud` signed in. Use the project and region where the `codelineage` service and `codelineage-scan` job are deployed.
-
-~~~sh
-python -m deploy.configure_ci --project YOUR_PROJECT_ID --region us-central1
-~~~
-
-In GitHub, open **Settings → Secrets and variables → Actions → Variables**. Add the three repository variables printed by the command. The workflow authenticates with short-lived Google credentials tied to this repository and its `main` workflow. Cloud Run reads runtime secrets from Secret Manager. [Actions variables](https://github.com/Sayyam2911/CodeLineage/settings/variables/actions) · [Workload Identity Federation](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)
-
-Run **Deploy to Cloud Run** from the **Actions** tab on `main` to test the connection. Subsequent pushes to `main` run backend tests and a container smoke test. The workflow stages a new API revision, updates the scan job to the same image digest, then routes traffic to that revision. If the rollout or hosted smoke test fails, it attempts to restore the previous traffic split and scan job image. [Deployment workflow](https://github.com/Sayyam2911/CodeLineage/actions/workflows/deploy-cloud-run.yml) · [Cloud Run traffic migration](https://docs.cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration)
-
-### Inspect the graph
-
-With Neo4j configured, each completed scan publishes a commit-pinned graph of files, components, extracted and inferred relationships, and review findings. Opening an existing snapshot publishes its graph if needed. The diagram and interview context use this topology, and source excerpts are read from the pinned snapshot artifacts. Start a Cypher graph view at a repository to see the connected data.
+Use the following query in Neo4j to inspect the captured structure for the built-in Healthchecks demo.
 
 ~~~cypher
 MATCH p=(r:CodeRepository {name: 'healthchecks/healthchecks'})
-  -[:HAS_SNAPSHOT]->(:CodeSnapshot)-[:HAS_FILE]->(f:SourceFile {path: 'hc/api/models.py'})
+  -[:HAS_SNAPSHOT]->(:CodeSnapshot)-[:HAS_FILE]->(:SourceFile {path: 'hc/api/models.py'})
   -[:DEFINES]->(:CodeComponent)-[:CODE_RELATION]->(:CodeComponent)
 RETURN p LIMIT 25
 ~~~
+
+[Build plan and acceptance checks](MILESTONES.md) · [Original design decisions](Agora-Design-Decisions.md)
